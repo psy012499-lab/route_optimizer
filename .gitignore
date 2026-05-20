@@ -11,3 +11,6 @@ output_result.xlsx
 .vscode/
 .idea/
 .DS_Store
+.streamlit/secrets.toml
+.streamlit/secrets.toml.txt
+.streamlit/
