@@ -1,0 +1,13 @@
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.streamlit/secrets.toml
+*.pkl
+maps/
+output_result.xlsx
+.vscode/
+.idea/
+.DS_Store
