@@ -61,14 +61,31 @@ if uploaded_file is not None:
 
     if st.button("최적화 실행", type="primary", use_container_width=True):
 
+        moto_bar = st.empty()
+
+        def update_progress(pct, msg):
+            pct = max(0, min(100, pct))
+            total = 30  # 바 길이 (칸 수)
+            filled = int(pct / 100 * total)
+            empty = total - filled - 1
+            bar = "━" * filled + "🏍️" + "─" * empty
+            moto_bar.markdown(
+                f"**{bar}** `{pct}%`",
+                unsafe_allow_html=True
+            )
+
+        update_progress(0, "")
+
         with st.spinner("AI 최적화 진행중..."):
 
             if algorithm.startswith("corse7"):
-                result = process7(uploaded_file)
+                result = process7(uploaded_file, progress_callback=update_progress)
             else:
-                result = process8(uploaded_file)
+                result = process8(uploaded_file, progress_callback=update_progress)
 
-        st.success("최적화 완료")
+        moto_bar.markdown("**━━━━━━━━━━━━━━━━━━━━━━━━━━━━━🏁** `완료!`")
+
+        st.success("최적화 완료 🎉")
 
         # =============================================
         # 결과 요약
