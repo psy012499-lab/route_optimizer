@@ -2,6 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import io
 import os
+import zipfile
 import pandas as pd
 
 from corse7_optimizer import process_excel as process7
@@ -147,3 +148,25 @@ if uploaded_file is not None:
                             mime="text/html",
                             key=f"cmp_{i}",
                         )
+
+            # =============================================
+            # 지도 전체 ZIP 다운로드
+            # =============================================
+
+            zip_buffer = io.BytesIO()
+
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for path in result["original_maps"]:
+                    zf.write(path, os.path.basename(path))
+                for path in result["optimized_maps"]:
+                    zf.write(path, os.path.basename(path))
+                for path in result["compare_maps"]:
+                    zf.write(path, os.path.basename(path))
+
+            st.download_button(
+                label="🗺️ 지도 전체 다운로드 (ZIP)",
+                data=zip_buffer.getvalue(),
+                file_name="최적화_지도.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
