@@ -1006,21 +1006,22 @@ def save_compare_map(
 # 메인
 # =========================================================
 
-def process_excel(uploaded_file):
+def process_excel(uploaded_file, progress_callback=None):
+
+    def report(pct, msg):
+        print(f"[{pct}%] {msg}")
+        if progress_callback:
+            progress_callback(pct, msg)
 
     print("[STEP] process_excel 시작")
 
     start_time = time.time()
 
     if CREATE_MAP:
-
-
-
         os.makedirs(MAP_FOLDER, exist_ok=True)
 
+    report(5, "엑셀 파일 읽는 중...")
     df = pd.read_excel(uploaded_file)
-
-    print("[STEP] 엑셀 읽기 완료")
 
     required_cols = [
         "출발지",
@@ -1033,7 +1034,6 @@ def process_excel(uploaded_file):
     optimized_map_paths = []
 
     for col in required_cols:
-
         if col not in df.columns:
             raise ValueError(f"{col} 컬럼 없음")
 
@@ -1067,13 +1067,8 @@ def process_excel(uploaded_file):
         ]
     )
 
-    df[COURSE_COL] = df[
-        COURSE_COL
-    ].astype(int)
-
-    df[ORDER_COL] = df[
-        ORDER_COL
-    ].astype(int)
+    df[COURSE_COL] = df[COURSE_COL].astype(int)
+    df[ORDER_COL] = df[ORDER_COL].astype(int)
 
     # =====================================================
     # 좌표 변환
@@ -1089,36 +1084,36 @@ def process_excel(uploaded_file):
     )
 
     addr2coord = {}
+    total_addr = len(unique_addresses)
 
-    print("[STEP] 좌표 변환")
-
-    for addr in unique_addresses:
-
+    for i, addr in enumerate(unique_addresses):
+        pct = 5 + int((i + 1) / total_addr * 30)
+        report(pct, f"좌표 변환 중... ({i+1}/{total_addr})")
         coord = geocode(addr)
-
         if coord is not None:
             addr2coord[addr] = coord
 
     start_xy = addr2coord.get(start_addr)
 
     if start_xy is None:
-        raise ValueError(
-            "출발지 좌표 변환 실패"
-        )
+        raise ValueError("출발지 좌표 변환 실패")
 
     # =====================================================
     # 최적화
     # =====================================================
 
-    print("[STEP] Hybrid 최적화")
+    report(35, "경로 최적화 중...")
 
     original_rows_all = []
     optimized_rows_all = []
 
-    for course_no in sorted(
-        df[COURSE_COL].unique()
-    ):
+    course_list = sorted(df[COURSE_COL].unique())
+    total_courses = len(course_list)
 
+    for ci, course_no in enumerate(course_list):
+
+        pct = 35 + int((ci + 1) / total_courses * 25)
+        report(pct, f"코스 {course_no} 최적화 중... ({ci+1}/{total_courses})")
         print(f"[코스 처리] {course_no}")
 
         course_df = df[
@@ -1194,27 +1189,33 @@ def process_excel(uploaded_file):
     # 상세 계산
     # =====================================================
 
+    report(60, "원본 경로 상세 계산 중...")
     df_original, d1, t1 = calc_route_detail(
         original_rows_all,
         start_xy,
         addr2coord
     )
 
+    report(70, "최적화 경로 상세 계산 중...")
     df_optimized, d2, t2 = calc_route_detail(
         optimized_rows_all,
         start_xy,
         addr2coord
     )
 
-     # =====================================================
+    # =====================================================
     # 지도 생성
     # =====================================================
 
     if CREATE_MAP:
 
-        print("[STEP] 지도 생성")
+        course_map_list = get_valid_course_list(df_original)
+        total_map = len(course_map_list)
 
-        for c in get_valid_course_list(df_original):
+        for mi, c in enumerate(course_map_list):
+
+            pct = 80 + int((mi + 1) / total_map * 18)
+            report(pct, f"지도 생성 중... ({mi+1}/{total_map})")
 
             # 원본 지도
             original_map_path = save_original_map(
@@ -1224,7 +1225,6 @@ def process_excel(uploaded_file):
                 start_xy
             )
             print("원본지도 경로:", original_map_path)
-
             original_map_paths.append(original_map_path)
 
             # 최적화 지도
@@ -1234,10 +1234,8 @@ def process_excel(uploaded_file):
                 addr2coord,
                 start_xy
             )
-            print("최적화지도 경로:", optimized_map_path)    
-
+            print("최적화지도 경로:", optimized_map_path)
             optimized_map_paths.append(optimized_map_path)
-
 
             # 비교 지도
             compare_map_path = save_compare_map(
@@ -1248,6 +1246,8 @@ def process_excel(uploaded_file):
                 start_xy
             )
             compare_map_paths.append(compare_map_path)
+
+    report(100, "완료!")
    
 
     # =====================================================
