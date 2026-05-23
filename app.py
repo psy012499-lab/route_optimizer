@@ -1,7 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import io
-import zipfile
 import os
 import pandas as pd
 
@@ -115,34 +114,36 @@ if uploaded_file is not None:
 
                     with map_tabs[0]:
                         with open(result["original_maps"][i], "r", encoding="utf-8") as f:
-                            components.html(f.read(), height=800)
+                            original_html = f.read()
+                        components.html(original_html, height=800)
+                        st.download_button(
+                            label=f"📥 코스{i+1} 원본 지도 다운로드",
+                            data=original_html.encode("utf-8"),
+                            file_name=os.path.basename(result["original_maps"][i]),
+                            mime="text/html",
+                            key=f"orig_{i}",
+                        )
 
                     with map_tabs[1]:
                         with open(result["optimized_maps"][i], "r", encoding="utf-8") as f:
-                            components.html(f.read(), height=800)
+                            optimized_html = f.read()
+                        components.html(optimized_html, height=800)
+                        st.download_button(
+                            label=f"📥 코스{i+1} 최적화 지도 다운로드",
+                            data=optimized_html.encode("utf-8"),
+                            file_name=os.path.basename(result["optimized_maps"][i]),
+                            mime="text/html",
+                            key=f"opt_{i}",
+                        )
 
                     with map_tabs[2]:
                         with open(result["compare_maps"][i], "r", encoding="utf-8") as f:
-                            components.html(f.read(), height=800)
-
-            # =============================================
-            # 지도 ZIP 다운로드
-            # =============================================
-
-            zip_buffer = io.BytesIO()
-
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for path in result["original_maps"]:
-                    zf.write(path, os.path.basename(path))
-                for path in result["optimized_maps"]:
-                    zf.write(path, os.path.basename(path))
-                for path in result["compare_maps"]:
-                    zf.write(path, os.path.basename(path))
-
-            st.download_button(
-                label="🗺️ 지도 전체 다운로드 (ZIP)",
-                data=zip_buffer.getvalue(),
-                file_name="최적화_지도.zip",
-                mime="application/zip",
-                use_container_width=True,
-            )
+                            compare_html = f.read()
+                        components.html(compare_html, height=800)
+                        st.download_button(
+                            label=f"📥 코스{i+1} 비교 지도 다운로드",
+                            data=compare_html.encode("utf-8"),
+                            file_name=os.path.basename(result["compare_maps"][i]),
+                            mime="text/html",
+                            key=f"cmp_{i}",
+                        )

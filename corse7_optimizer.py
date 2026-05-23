@@ -78,18 +78,14 @@ LABOR_COST_PER_HOUR = 15000
 # =========================================================
 
 if USE_CACHE and os.path.exists(GEOCODE_CACHE_FILE):
-
     with open(GEOCODE_CACHE_FILE, "rb") as f:
         geocode_cache = pickle.load(f)
-
 else:
     geocode_cache = {}
 
 if USE_CACHE and os.path.exists(ROAD_CACHE_FILE):
-
     with open(ROAD_CACHE_FILE, "rb") as f:
         road_cache = pickle.load(f)
-
 else:
     road_cache = {}
 
@@ -381,7 +377,7 @@ def get_road_distance(start_xy, end_xy):
         return 0, 0
 
 # =========================================================
-# Hybrid 최적화
+# Hybrid 최적화 (계산한 도로거리 캐시로 재사용)
 # =========================================================
 
 def hybrid_road_corrected_route(
@@ -389,33 +385,23 @@ def hybrid_road_corrected_route(
     goal_coords,
     candidate_count=3
 ):
-
     unvisited = goal_coords[:]
-
     route = []
-
     current = start_xy
 
     while unvisited:
 
         candidates = sorted(
             unvisited,
-            key=lambda x:
-            haversine_distance(current, x)
+            key=lambda x: haversine_distance(current, x)
         )[:candidate_count]
 
         best = None
         best_time = INF
 
         for cand in candidates:
-
-            d, t = get_road_distance(
-                current,
-                cand
-            )
-
+            d, t = get_road_distance(current, cand)
             if t < best_time:
-
                 best = cand
                 best_time = t
 
@@ -423,9 +409,7 @@ def hybrid_road_corrected_route(
             best = candidates[0]
 
         route.append(best)
-
         unvisited.remove(best)
-
         current = best
 
     return route
