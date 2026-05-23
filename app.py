@@ -74,6 +74,28 @@ if uploaded_file is not None:
         st.dataframe(result["summary"], use_container_width=True)
 
         # =============================================
+        # 엑셀 다운로드
+        # =============================================
+
+        import io
+        import pandas as pd
+
+        excel_buffer = io.BytesIO()
+
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            result["df_original"].to_excel(writer, sheet_name="원본", index=False)
+            result["df_optimized"].to_excel(writer, sheet_name="최적화", index=False)
+            result["summary"].to_excel(writer, sheet_name="요약", index=False)
+
+        st.download_button(
+            label="📥 결과 엑셀 다운로드",
+            data=excel_buffer.getvalue(),
+            file_name="최적화_결과.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+        # =============================================
         # 비교지도
         # =============================================
 

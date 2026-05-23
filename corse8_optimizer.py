@@ -1424,6 +1424,8 @@ def process_excel(uploaded_file):
 
     return {
     "summary": summary,
+    "df_original": df_original,
+    "df_optimized": df_optimized,
     "original_maps": original_map_paths,
     "optimized_maps": optimized_map_paths,
     "compare_maps": compare_map_paths
