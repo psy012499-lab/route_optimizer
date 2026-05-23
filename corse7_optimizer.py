@@ -434,72 +434,55 @@ def hybrid_road_corrected_route(
 # 상세 계산
 # =========================================================
 
-def calc_route_detail(
-    route_rows,
-    start_xy,
-    addr2coord
-):
-
+def calc_route_detail(route_rows, start_xy, addr2coord):
     rows = []
-
     total_d = 0
     total_t = 0
 
     prev_xy = start_xy
     prev_addr = "출발지"
+    prev_course = None  # ← 추가
 
     for idx, item in enumerate(route_rows, start=1):
-
         addr = item["도착지"]
-
         curr_xy = addr2coord.get(addr)
+        curr_course = item[COURSE_COL]
 
         if curr_xy is None:
             continue
 
-        d, t = get_road_distance(
-            prev_xy,
-            curr_xy
-        )
+        # ✅ 코스가 바뀌면 이전 코스의 출발지 복귀 추가
+        if prev_course is not None and curr_course != prev_course:
+            d, t = get_road_distance(prev_xy, start_xy)
+            total_d += d
+            total_t += t
+            rows.append({
+                "전체순번": len(rows) + 1,
+                COURSE_COL: prev_course,
+                ORDER_COL: None,
+                "코스내순번": None,
+                "이전지점": prev_addr,
+                "도착지": "출발지복귀",
+                "구간거리(km)": meter_to_km(d),
+                "구간이동시간": ms_to_hour_min(t)
+            })
+            # 다음 코스는 출발지에서 다시 시작
+            prev_xy = start_xy
+            prev_addr = "출발지"
 
+        d, t = get_road_distance(prev_xy, curr_xy)
         total_d += d
         total_t += t
 
-        rows.append({
-            "전체순번": idx,
-            COURSE_COL: item[COURSE_COL],
-            ORDER_COL: item[ORDER_COL],
-            "코스내순번": item.get("코스내순번", ""),
-            "이전지점": prev_addr,
-            "도착지": addr,
-            "구간거리(km)": meter_to_km(d),
-            "구간이동시간": ms_to_hour_min(t)
-        })
+        rows.append({ ... })  # 기존 코드 유지
 
         prev_xy = curr_xy
         prev_addr = addr
+        prev_course = curr_course  # ← 추가
 
-    # 출발지 복귀
-    d, t = get_road_distance(
-        prev_xy,
-        start_xy
-    )
-
-    total_d += d
-    total_t += t
-
-    rows.append({
-        "전체순번": len(rows) + 1,
-        COURSE_COL: None,
-        ORDER_COL: None,
-        "코스내순번": None,
-        "이전지점": prev_addr,
-        "도착지": "출발지복귀",
-        "구간거리(km)": meter_to_km(d),
-        "구간이동시간": ms_to_hour_min(t)
-    })
-
-    return pd.DataFrame(rows), total_d, total_t
+    # 마지막 코스 복귀 (기존 코드 유지)
+    d, t = get_road_distance(prev_xy, start_xy)
+    ...
 
 # =========================================================
 # 원본 지도 저장
