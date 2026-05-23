@@ -474,15 +474,38 @@ def calc_route_detail(route_rows, start_xy, addr2coord):
         total_d += d
         total_t += t
 
-        rows.append({ ... })  # 기존 코드 유지
+        rows.append({
+            "전체순번": idx,
+            COURSE_COL: item[COURSE_COL],
+            ORDER_COL: item[ORDER_COL],
+            "코스내순번": item.get("코스내순번", ""),
+            "이전지점": prev_addr,
+            "도착지": addr,
+            "구간거리(km)": meter_to_km(d),
+            "구간이동시간": ms_to_hour_min(t)
+        })
 
         prev_xy = curr_xy
         prev_addr = addr
-        prev_course = curr_course  # ← 추가
+        prev_course = curr_course
 
-    # 마지막 코스 복귀 (기존 코드 유지)
+    # 마지막 코스 복귀
     d, t = get_road_distance(prev_xy, start_xy)
-    ...
+    total_d += d
+    total_t += t
+
+    rows.append({
+        "전체순번": len(rows) + 1,
+        COURSE_COL: None,
+        ORDER_COL: None,
+        "코스내순번": None,
+        "이전지점": prev_addr,
+        "도착지": "출발지복귀",
+        "구간거리(km)": meter_to_km(d),
+        "구간이동시간": ms_to_hour_min(t)
+    })
+
+    return pd.DataFrame(rows), total_d, total_t
 
 # =========================================================
 # 원본 지도 저장
