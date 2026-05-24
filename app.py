@@ -118,59 +118,66 @@ def make_sample_excel() -> io.BytesIO:
 
 # ── 결과 요약을 모바일 친화적 카드로 렌더링 ───────────────────────────
 def render_summary_cards(summary_df: pd.DataFrame):
-    """summary DataFrame에서 핵심 수치를 카드 그리드로 표시"""
-
-    # summary DataFrame 컬럼 구조에 맞게 값 추출
-    # 예상 컬럼: 코스, 원본거리(km), 최적화거리(km), 절감거리(km), 절감률(%), 연간절감액 등
+    """summary DataFrame의 숫자 컬럼을 카드 그리드로 표시"""
     try:
-        total_row = summary_df[summary_df.iloc[:, 0].astype(str).str.contains("합계|전체|total", case=False, na=False)]
-        if total_row.empty:
-            total_row = summary_df.iloc[[-1]]  # 마지막 행을 합계로 간주
+        # 합계 행 찾기 (마지막 행 또는 '합계' 포함 행)
+        mask = summary_df.astype(str).apply(
+            lambda col: col.str.contains("합계|전체|합 계|total", case=False, na=False)
+        ).any(axis=1)
+        if mask.any():
+            row = summary_df[mask].iloc[0]
+        else:
+            row = summary_df.iloc[-1]  # 마지막 행
 
-        row = total_row.iloc[0]
-        cols = summary_df.columns.tolist()
+        # 숫자형 컬럼만 추출
+        num_cols = []
+        for col in summary_df.columns:
+            val = row[col]
+            try:
+                fval = float(str(val).replace(",", "").replace("%", ""))
+                num_cols.append((str(col), fval, str(val)))
+            except (ValueError, TypeError):
+                pass
 
-        def get_col(keywords):
-            for kw in keywords:
-                for c in cols:
-                    if kw in str(c):
-                        return row[c]
-            return None
+        if not num_cols:
+            return False
 
-        orig_km   = get_col(["원본거리", "원본_거리", "원본 거리", "기존거리"])
-        opt_km    = get_col(["최적거리", "최적화거리", "최적화_거리", "최적 거리"])
-        save_km   = get_col(["절감거리", "절감_거리", "단축"])
-        save_pct  = get_col(["절감률", "절감율", "단축률", "%"])
-        annual    = get_col(["연간절감", "연간_절감", "연간 절감", "절감액"])
+        # 컬럼명 기반으로 색상/강조 결정
+        def card_class(col_name):
+            c = col_name.lower()
+            if any(k in c for k in ["절감률", "절감율", "단축률", "%", "율"]):
+                return "highlight"
+            if any(k in c for k in ["절감", "단축", "최적"]):
+                return "green"
+            return ""
 
-        cards = []
-        if save_pct  is not None: cards.append(("이동거리 단축", f"▼{float(save_pct):.1f}%",  "",          "highlight"))
-        if save_km   is not None: cards.append(("절감 거리",     f"{float(save_km):.1f}km",    "하루 기준", "green"))
-        if orig_km   is not None: cards.append(("원본 거리",     f"{float(orig_km):.1f}km",    "",          ""))
-        if opt_km    is not None: cards.append(("최적화 거리",   f"{float(opt_km):.1f}km",     "",          ""))
-        if annual    is not None:
-            val = float(annual)
-            label = f"{val/10000:.0f}만원" if val >= 10000 else f"{val:.0f}원"
-            cards.append(("연간 절감액", label, "4명 기준", "green"))
+        # 단위 포맷팅
+        def fmt_val(col_name, raw_str, fval):
+            c = col_name.lower()
+            if any(k in c for k in ["절감액", "비용", "원"]):
+                if fval >= 10_000_000:
+                    return f"{fval/10_000_000:.1f}천만원"
+                elif fval >= 10_000:
+                    return f"{fval/10_000:.0f}만원"
+                else:
+                    return f"{fval:,.0f}원"
+            return raw_str  # 원본 문자열 그대로 (이미 단위 포함된 경우)
 
-        if not cards:
-            raise ValueError("카드 데이터 없음")
-
-        # 2열 그리드로 렌더링
         html = '<div class="metric-grid">'
-        for label, value, sub, cls in cards:
+        for col, fval, raw in num_cols[:6]:  # 최대 6개
+            cls   = card_class(col)
+            value = fmt_val(col, raw, fval)
             html += f"""
             <div class="metric-card">
-                <div class="metric-label">{label}</div>
+                <div class="metric-label">{col}</div>
                 <div class="metric-value {cls}">{value}</div>
-                {'<div class="metric-sub">' + sub + '</div>' if sub else ''}
             </div>"""
         html += '</div>'
         st.markdown(html, unsafe_allow_html=True)
         return True
 
-    except Exception:
-        return False  # 카드 렌더링 실패 시 원본 dataframe으로 폴백
+    except Exception as e:
+        return False
 
 
 # =====================================================
@@ -266,19 +273,15 @@ if target_file is not None:
         # ── 요약 결과 ─────────────────────────────────────────────
         st.markdown("#### 📊 요약 결과")
 
-        # 카드 렌더링 시도 → 실패 시 compact dataframe
-        card_ok = render_summary_cards(result["summary"])
-        if not card_ok:
-            # 컬럼 수가 많을 때 가로 스크롤 가능한 소형 테이블
-            st.dataframe(
-                result["summary"],
-                use_container_width=True,
-                height=min(200, 40 + 35 * len(result["summary"])),
-            )
+        # 숫자 컬럼만 골라서 모바일 친화적 소형 테이블로 표시
+        summary = result["summary"]
 
-        # 전체 요약 테이블 (접을 수 있게)
-        with st.expander("📋 상세 요약 테이블 보기"):
-            st.dataframe(result["summary"], use_container_width=True)
+        # 핵심 수치 카드 (파싱 성공 시만)
+        card_ok = render_summary_cards(summary)
+
+        # 항상 전체 테이블 표시 (가로 스크롤 가능)
+        with st.expander("📋 상세 요약 테이블 보기", expanded=not card_ok):
+            st.dataframe(summary, use_container_width=True)
 
         # ── 엑셀 다운로드 ─────────────────────────────────────────
         excel_buffer = io.BytesIO()
