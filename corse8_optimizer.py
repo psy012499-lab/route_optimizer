@@ -64,8 +64,8 @@ INF = float("inf")
 # 비용 설정
 # =========================================================
 
-COST_PER_KM = 1200
-LABOR_COST_PER_HOUR = 15000
+COST_PER_KM = 925
+LABOR_COST_PER_HOUR = 17000
 
 # =========================================================
 # 자동 파일 선택
@@ -1296,7 +1296,7 @@ def process_excel(uploaded_file, progress_callback=None):
     )
 
     monthly_total_saving = (
-        daily_total_saving * 25
+        daily_total_saving * 21
     )
 
     yearly_total_saving = (
@@ -1345,7 +1345,7 @@ def process_excel(uploaded_file, progress_callback=None):
             round(daily_total_saving)
         ],
 
-        "월 절감액(25일 기준)": [
+        "월 절감액(21일 기준)": [
             None,
             None,
             round(monthly_total_saving)
