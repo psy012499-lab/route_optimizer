@@ -154,12 +154,20 @@ def render_summary_cards(summary_df: pd.DataFrame):
         def fmt_val(col_name, raw_str, fval):
             c = col_name.lower()
             if any(k in c for k in ["절감액", "비용", "원"]):
-                if fval >= 10_000_000:
-                    return f"{fval/10_000_000:.1f}천만원"
-                elif fval >= 10_000:
-                    return f"{fval/10_000:.0f}만원"
+                # 컬럼명에 천원 포함 → 이미 천원 단위로 계산된 값
+                if "천원" in col_name:
+                    if fval >= 1000:
+                        return f"{fval:,.0f}천원"
+                    else:
+                        return f"{fval:.1f}천원"
+                # 원 단위 값 → 천원으로 변환
                 else:
-                    return f"{fval:,.0f}원"
+                    if fval >= 1_000_000:
+                        return f"{fval/1000:,.0f}천원"
+                    elif fval >= 1_000:
+                        return f"{fval/1000:.1f}천원"
+                    else:
+                        return f"{fval:,.0f}원"
             return raw_str  # 원본 문자열 그대로 (이미 단위 포함된 경우)
 
         html = '<div class="metric-grid">'
