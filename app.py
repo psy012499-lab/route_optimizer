@@ -675,12 +675,12 @@ if st.session_state.get("last_result"):
     col_slider, col_result = st.columns([2, 1])
     with col_slider:
         national_workers = st.slider(
-            "전국 집배원 수 (명)",
-            min_value=1000,
-            max_value=30000,
+            "집배원 수 (명)",
+            min_value=1,
+            max_value=20000,
             value=17000,
-            step=500,
-            help="우정사업본부 기준 약 17,000명",
+            step=1,
+            help="우체국 단위(10명 내외) ~ 전국(약 17,000명) 규모로 조정 가능",
         )
     with col_result:
         try:
@@ -692,8 +692,8 @@ if st.session_state.get("last_result"):
                     yearly_per = yearly_4 / 4
                     national_saving = yearly_per * national_workers
                     st.metric(
-                        label=f"전국 {national_workers:,}명 기준",
-                        value=f"{national_saving/100000000:,.0f}억원/년",
+                        label=f"집배원 {national_workers:,}명 기준",
+                        value=f"{national_saving/100000000:,.1f}억원/년",
                         delta=f"1인 평균 {yearly_per/1000:,.0f}천원/년",
                     )
         except Exception:
