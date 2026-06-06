@@ -198,7 +198,7 @@ st.title("🚚 AI 집배순로 최적화")
 
 ui_algorithm = st.radio(
     "최적화 방식",
-    ["corse7 - 통상순로 최적화", "corse8 - 통상순로 + 통상코스 최적화"],
+    ["corse7 - 통상순로 최적화", "corse8 - 통상코스 + 통상순로 최적화"],
     label_visibility="visible",
 )
 
@@ -319,8 +319,8 @@ elif uploaded_file is not None:
                 gap: 20px;
                 flex-wrap: wrap;
             ">
-            <span>📦 <b style="color:var(--color-text-primary)">총 배송지</b> {point_cnt:,}건</span>
             <span>🗂 <b style="color:var(--color-text-primary)">코스 수</b> {course_cnt}개</span>
+            <span>📦 <b style="color:var(--color-text-primary)">총 배송지</b> {point_cnt:,}건</span>
             <span>🔢 <b style="color:var(--color-text-primary)">코스 목록</b> {worker_list}</span>
             </div>
             """,
@@ -402,7 +402,7 @@ if st.session_state.get("last_result"):
     algo_label = (
         "CORSE7 (통상순로 최적화)"
         if final_params["algorithm"] == "corse7"
-        else "CORSE8 (통상순로+코스 최적화)"
+        else "CORSE8 (통상코스 + 통상순로 최적화)"
     )
 
     st.success("🎉 최적화 완료!")
