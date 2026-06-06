@@ -3,6 +3,11 @@ import io
 import os
 import zipfile
 import pandas as pd
+import requests as _requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from corse7_optimizer import process_excel as process7
 from corse8_optimizer import process_excel as process8
 
@@ -11,9 +16,83 @@ from corse8_optimizer import process_excel as process8
 # 설정 상수
 # =====================================================
 
+ANTHROPIC_API_URL   = "https://api.anthropic.com/v1/messages"
+HAIKU_MODEL         = "claude-haiku-4-5-20251001"
+ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
+
 DEFAULT_COST_PER_KM         = 925
 DEFAULT_LABOR_COST_PER_HOUR = 17000
 DEFAULT_WORKING_DAYS        = 21
+
+
+# =====================================================
+# Claude AI — 결과 자연어 해석
+# =====================================================
+
+def build_summary_text(summary: pd.DataFrame, algorithm_name: str,
+                        cost_per_km: int, labor_cost: int, working_days: int) -> str:
+    try:
+        lines = [
+            f"알고리즘: {algorithm_name}",
+            f"운송비 단가: {cost_per_km}원/km",
+            f"인건비 단가: {labor_cost}원/시간",
+            f"월 근무일: {working_days}일",
+        ]
+        for col in summary.columns:
+            if col == "구분":
+                continue
+            orig_val  = summary[summary["구분"] == "원본"][col].values
+            opt_val   = summary[summary["구분"] == "최적화"][col].values
+            saved_row = summary[summary["구분"] == "절감효과"]
+            saved_val = saved_row[col].values if not saved_row.empty else summary.iloc[-1:][col].values
+            if len(orig_val)  > 0 and str(orig_val[0])  not in ("None", "nan", ""):
+                lines.append(f"  원본 {col}: {orig_val[0]}")
+            if len(opt_val)   > 0 and str(opt_val[0])   not in ("None", "nan", ""):
+                lines.append(f"  최적화 {col}: {opt_val[0]}")
+            if len(saved_val) > 0 and str(saved_val[0]) not in ("None", "nan", ""):
+                lines.append(f"  절감 {col}: {saved_val[0]}")
+        return "\n".join(lines)
+    except Exception:
+        return summary.to_string(index=False)
+
+
+def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
+    if not ANTHROPIC_API_KEY:
+        return None   # 키 없으면 None 반환
+
+    system = (
+        "당신은 우정사업본부 물류 전문 AI 분석관입니다. "
+        "집배 경로 최적화 결과를 집배원과 관리자가 쉽게 이해할 수 있도록 "
+        "간결하고 명확한 한국어로 해석해 주세요. "
+        "전문 용어는 풀어서 설명하고, 수치는 구체적으로 언급하며, "
+        "현업 적용 시 기대되는 효과를 강조해 주세요.\n\n"
+        "응답은 반드시 아래 형식을 따르세요:\n\n"
+        "**[최적화 결과 요약]**\n(2~3문장으로 핵심 수치 요약)\n\n"
+        "**[절감 효과 분석]**\n(비용·시간 절감 의미를 현업 관점에서 설명)\n\n"
+        "**[현장 적용 권고]**\n(실무 적용 시 고려사항 또는 기대 효과 1~2가지)"
+    )
+    user = (
+        f"다음은 AI 집배순로 최적화 시스템({algorithm_name})의 실행 결과입니다.\n\n"
+        f"{summary_text}\n\n"
+        "이 결과를 분석하여 우편집중국 담당자가 이해하기 쉽게 해석해 주세요."
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-api-key": ANTHROPIC_API_KEY,
+    }
+    payload = {
+        "model": HAIKU_MODEL,
+        "max_tokens": 800,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+    }
+    try:
+        resp = _requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"]
+    except Exception as e:
+        return f"[오류] {e}"
 
 
 # =====================================================
@@ -76,6 +155,16 @@ h3 { font-size: 1.05rem !important; }
     font-size: 12px;
     font-weight: 600;
     margin: 2px 3px;
+}
+.ai-box {
+    background: #f0f7ff;
+    border-left: 4px solid #1C6EBF;
+    border-radius: 0 8px 8px 0;
+    padding: 16px 18px;
+    margin: 8px 0 16px;
+    font-size: 14px;
+    line-height: 1.8;
+    color: #042C53;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -179,6 +268,8 @@ def render_summary_cards(summary_df: pd.DataFrame):
 # session_state 초기화
 # =====================================================
 
+if "ai_interpretation" not in st.session_state:
+    st.session_state["ai_interpretation"] = None
 if "last_result" not in st.session_state:
     st.session_state["last_result"] = None
 if "last_final_params" not in st.session_state:
@@ -381,6 +472,7 @@ if target_file is not None:
                 "labor_cost_per_hour": ui_labor_cost,
                 "working_days":        ui_working_days,
             }
+            st.session_state["ai_interpretation"] = None
 
         except ValueError as e:
             moto_bar.empty()
@@ -440,6 +532,42 @@ if st.session_state.get("last_result"):
         file_name="최적화_결과.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+    # ── AI 결과 해석 (Claude API) ──────────────────────────────
+    st.markdown("#### 🤖 AI 결과 해석")
+
+    col_btn, _ = st.columns([1, 2])
+    with col_btn:
+        gen_btn = st.button("✨ AI 해석 생성", type="primary", use_container_width=True)
+
+    if gen_btn:
+        if not ANTHROPIC_API_KEY:
+            st.warning("⚠️ ANTHROPIC_API_KEY가 .env에 설정되지 않았습니다.")
+        else:
+            with st.spinner("Claude AI가 결과를 분석 중입니다..."):
+                summary_text   = build_summary_text(
+                    summary, algo_label,
+                    final_params["cost_per_km"],
+                    final_params["labor_cost_per_hour"],
+                    final_params["working_days"],
+                )
+                interpretation = call_claude_interpretation(summary_text, algo_label)
+                st.session_state["ai_interpretation"] = interpretation
+
+    if st.session_state.get("ai_interpretation"):
+        st.markdown(
+            f'<div class="ai-box">'
+            f'{st.session_state["ai_interpretation"].replace(chr(10), "<br>")}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.download_button(
+            label="📄 AI 해석 텍스트 저장",
+            data=st.session_state["ai_interpretation"],
+            file_name="AI_결과해석.txt",
+            mime="text/plain",
+            key="ai_text_dl",
+        )
 
     # ── 지도 비교 ─────────────────────────────────────────────
     st.markdown("#### 🗺️ 지도 비교")
