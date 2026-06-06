@@ -18,7 +18,6 @@ from corse8_optimizer import process_excel as process8
 
 ANTHROPIC_API_URL   = "https://api.anthropic.com/v1/messages"
 HAIKU_MODEL         = "claude-haiku-4-5-20251001"
-ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 
 DEFAULT_COST_PER_KM         = 925
 DEFAULT_LABOR_COST_PER_HOUR = 17000
@@ -90,7 +89,8 @@ def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
     }
     try:
         resp = _requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            return f"[오류] {resp.status_code} — {resp.json().get('error', {}).get('message', resp.text)}"
         return resp.json()["content"][0]["text"]
     except Exception as e:
         return f"[오류] {e}"
@@ -537,38 +537,45 @@ if st.session_state.get("last_result"):
     # ── AI 결과 해석 (Claude API) ──────────────────────────────
     st.markdown("#### 🤖 AI 결과 해석")
 
-    col_btn, _ = st.columns([1, 2])
-    with col_btn:
-        gen_btn = st.button("✨ AI 해석 생성", type="primary", use_container_width=True)
+    if not st.session_state.get("ai_interpretation"):
+        col_btn, _ = st.columns([1, 2])
+        with col_btn:
+            gen_btn = st.button("✨ AI 해석 생성", type="primary", use_container_width=True)
 
-    if gen_btn:
-        if not os.getenv("ANTHROPIC_API_KEY", "").strip():
-            st.warning("⚠️ ANTHROPIC_API_KEY가 .env에 설정되지 않았습니다.")
-        else:
-            with st.spinner("Claude AI가 결과를 분석 중입니다..."):
-                summary_text   = build_summary_text(
-                    summary, algo_label,
-                    final_params["cost_per_km"],
-                    final_params["labor_cost_per_hour"],
-                    final_params["working_days"],
-                )
-                interpretation = call_claude_interpretation(summary_text, algo_label)
-                st.session_state["ai_interpretation"] = interpretation
-
-    if st.session_state.get("ai_interpretation"):
+        if gen_btn:
+            if not os.getenv("ANTHROPIC_API_KEY", "").strip():
+                st.warning("⚠️ ANTHROPIC_API_KEY가 .env에 설정되지 않았습니다.")
+            else:
+                with st.spinner("Claude AI가 결과를 분석 중입니다..."):
+                    summary_text   = build_summary_text(
+                        summary, algo_label,
+                        final_params["cost_per_km"],
+                        final_params["labor_cost_per_hour"],
+                        final_params["working_days"],
+                    )
+                    interpretation = call_claude_interpretation(summary_text, algo_label)
+                    st.session_state["ai_interpretation"] = interpretation
+                    st.rerun()
+    else:
         st.markdown(
             f'<div class="ai-box">'
             f'{st.session_state["ai_interpretation"].replace(chr(10), "<br>")}'
             f'</div>',
             unsafe_allow_html=True,
         )
-        st.download_button(
-            label="📄 AI 해석 텍스트 저장",
-            data=st.session_state["ai_interpretation"],
-            file_name="AI_결과해석.txt",
-            mime="text/plain",
-            key="ai_text_dl",
-        )
+        col_dl, col_re = st.columns([1, 1])
+        with col_dl:
+            st.download_button(
+                label="📄 AI 해석 텍스트 저장",
+                data=st.session_state["ai_interpretation"],
+                file_name="AI_결과해석.txt",
+                mime="text/plain",
+                key="ai_text_dl",
+            )
+        with col_re:
+            if st.button("↺ 다시 생성", use_container_width=True):
+                st.session_state["ai_interpretation"] = None
+                st.rerun()
 
     # ── 지도 비교 ─────────────────────────────────────────────
     st.markdown("#### 🗺️ 지도 비교")
