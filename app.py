@@ -57,8 +57,9 @@ def build_summary_text(summary: pd.DataFrame, algorithm_name: str,
 
 
 def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
-    if not ANTHROPIC_API_KEY:
-        return None   # 키 없으면 None 반환
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return None
 
     system = (
         "당신은 우정사업본부 물류 전문 AI 분석관입니다. "
@@ -79,7 +80,7 @@ def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
     headers = {
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01",
-        "x-api-key": ANTHROPIC_API_KEY,
+        "x-api-key": api_key,
     }
     payload = {
         "model": HAIKU_MODEL,
@@ -541,7 +542,7 @@ if st.session_state.get("last_result"):
         gen_btn = st.button("✨ AI 해석 생성", type="primary", use_container_width=True)
 
     if gen_btn:
-        if not ANTHROPIC_API_KEY:
+        if not os.getenv("ANTHROPIC_API_KEY", "").strip():
             st.warning("⚠️ ANTHROPIC_API_KEY가 .env에 설정되지 않았습니다.")
         else:
             with st.spinner("Claude AI가 결과를 분석 중입니다..."):
