@@ -1,25 +1,66 @@
 # =========================================================
 # AI 집배순로 최적화 최종 완성본
 # =========================================================
+#
+# [개인정보 처리 방침]
+# - 입력 데이터(주소)는 집배 경로 최적화 목적으로만 사용됩니다.
+# - 도로명 주소는 공개 정보이며 개인 식별 정보(성명·연락처 등)를 포함하지 않습니다.
+# - 좌표 변환 시 네이버 Geocode API, 경로 계산 시 네이버 Direction API를
+#   경유하여 주소 데이터가 외부 서버로 전송됩니다.
+# - 그 외 추가적인 외부 전송은 없으며, 처리 결과는 로컬에만 저장됩니다.
+# - API 호출 내역은 privacy_log.txt에 로컬 기록됩니다.
+# =========================================================
 
 import os
 import glob
 import time
-import pickle
+import logging
+import re
 import pandas as pd
 import requests
 import folium
 
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
 from math import radians, sin, cos, sqrt, atan2
-from functools import lru_cache
 
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+import cache_manager
+
+
+# =========================================================
+# 개인정보 로그 설정
+# =========================================================
+
+privacy_logger = logging.getLogger("privacy")
+privacy_logger.setLevel(logging.INFO)
+_fh = logging.FileHandler("privacy_log.txt", encoding="utf-8")
+_fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+if not privacy_logger.handlers:
+    privacy_logger.addHandler(_fh)
+
+
+# =========================================================
+# 개인 식별 정보(PII) 검증
+# =========================================================
+
+# 이름·전화번호 패턴 — 주소 데이터에 혼입 여부 확인용
+_PII_PATTERNS = [
+    re.compile(r"01[0-9]-\d{3,4}-\d{4}"),          # 휴대전화
+    re.compile(r"\d{2,3}-\d{3,4}-\d{4}"),           # 일반전화
+    re.compile(r"[가-힣]{2,4}\s*(씨|님|귀중)"),      # 이름+호칭
+]
+
+def check_pii(addr: str) -> bool:
+    """주소 문자열에 개인 식별 정보가 포함되어 있으면 True 반환"""
+    for pattern in _PII_PATTERNS:
+        if pattern.search(addr):
+            return True
+    return False
 
 # =========================================================
 # 네이버 API KEY
@@ -41,8 +82,7 @@ ORDER_COL = "통상순로"
 
 OUTPUT_EXCEL = "output_result.xlsx"
 
-GEOCODE_CACHE_FILE = "geocode_cache.pkl"
-ROAD_CACHE_FILE = "road_cache.pkl"
+USE_CACHE = True  # cache_manager를 통해 자동 관리됨
 
 # =========================================================
 # 지도 설정
@@ -50,12 +90,6 @@ ROAD_CACHE_FILE = "road_cache.pkl"
 
 CREATE_MAP = True
 MAP_FOLDER = "maps"
-
-# =========================================================
-# 설정
-# =========================================================
-
-USE_CACHE = True
 CANDIDATE_COUNT = 3
 
 INF = float("inf")
@@ -72,22 +106,6 @@ LABOR_COST_PER_HOUR = 17000
 # =========================================================
 
 
-
-# =========================================================
-# 캐시 로드
-# =========================================================
-
-if USE_CACHE and os.path.exists(GEOCODE_CACHE_FILE):
-    with open(GEOCODE_CACHE_FILE, "rb") as f:
-        geocode_cache = pickle.load(f)
-else:
-    geocode_cache = {}
-
-if USE_CACHE and os.path.exists(ROAD_CACHE_FILE):
-    with open(ROAD_CACHE_FILE, "rb") as f:
-        road_cache = pickle.load(f)
-else:
-    road_cache = {}
 
 # =========================================================
 # Session 생성
@@ -217,11 +235,7 @@ def get_valid_course_list(df_route):
 # 좌표 변환
 # =========================================================
 
-@lru_cache(maxsize=None)
 def geocode(addr):
-
-    if addr in geocode_cache:
-        return geocode_cache[addr]
 
     if addr is None:
         return None
@@ -230,6 +244,19 @@ def geocode(addr):
 
     if addr == "":
         return None
+
+    # ① 캐시 확인 — API 호출 없이 즉시 반환
+    cached = cache_manager.get_geocode(addr)
+    if cached is not None:
+        return cached
+
+    # ② 개인 식별 정보 포함 여부 확인
+    if check_pii(addr):
+        privacy_logger.warning(f"[PII 감지] 주소에 개인 식별 정보 포함 가능성: {addr[:20]}...")
+        print(f"[경고] 주소에 개인 식별 정보가 포함될 수 있습니다: {addr[:20]}...")
+
+    # ③ 외부 API 전송 로그
+    privacy_logger.info(f"[Geocode 전송] 네이버 Geocode API → 주소 {len(addr)}자")
 
     url = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
 
@@ -244,6 +271,7 @@ def geocode(addr):
         )
 
         if response.status_code != 200:
+            privacy_logger.error(f"[Geocode 실패] HTTP {response.status_code}")
             return None
 
         res = response.json()
@@ -254,9 +282,7 @@ def geocode(addr):
             addresses is None
             or len(addresses) == 0
         ):
-
             print("[Geocode 실패]", addr)
-
             return None
 
         coord = (
@@ -264,14 +290,12 @@ def geocode(addr):
             float(addresses[0]["y"])
         )
 
-        geocode_cache[addr] = coord
-
+        # ④ 결과를 캐시에 즉시 저장
+        cache_manager.set_geocode(addr, coord)
         return coord
 
     except Exception as e:
-
         print("[Geocode 오류]", addr, e)
-
         return None
 
 # =========================================================
@@ -315,10 +339,10 @@ def get_road_distance(start_xy, end_xy):
     if start_xy is None or end_xy is None:
         return 0, 0
 
-    key = (start_xy, end_xy)
-
-    if key in road_cache:
-        return road_cache[key]
+    # ① 캐시 확인 — API 호출 없이 즉시 반환
+    cached = cache_manager.get_road(start_xy, end_xy)
+    if cached is not None:
+        return cached
 
     url = "https://maps.apigw.ntruss.com/map-direction/v1/driving"
 
@@ -366,7 +390,8 @@ def get_road_distance(start_xy, end_xy):
             duration
         )
 
-        road_cache[key] = result
+        # ② 결과를 캐시에 즉시 저장
+        cache_manager.set_road(start_xy, end_xy, result)
 
         return result
 
@@ -1375,28 +1400,6 @@ def process_excel(uploaded_file, progress_callback=None, target_courses=None, wo
     # =====================================================
     # 캐시 저장
     # =====================================================
-
-    if USE_CACHE:
-
-        with open(
-            GEOCODE_CACHE_FILE,
-            "wb"
-        ) as f:
-
-            pickle.dump(
-                geocode_cache,
-                f
-            )
-
-        with open(
-            ROAD_CACHE_FILE,
-            "wb"
-        ) as f:
-
-            pickle.dump(
-                road_cache,
-                f
-            )
 
     elapsed = time.time() - start_time
 

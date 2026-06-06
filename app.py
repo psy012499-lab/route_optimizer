@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import cache_manager
 from corse7_optimizer import process_excel as process7
 from corse8_optimizer import process_excel as process8
 
@@ -275,6 +276,14 @@ if "last_result" not in st.session_state:
     st.session_state["last_result"] = None
 if "last_final_params" not in st.session_state:
     st.session_state["last_final_params"] = None
+if "run_triggered" not in st.session_state:
+    st.session_state["run_triggered"] = False   # 일반 파일 실행 트리거
+if "sample_triggered" not in st.session_state:
+    st.session_state["sample_triggered"] = False  # 샘플 실행 트리거
+if "uploaded_file_bytes" not in st.session_state:
+    st.session_state["uploaded_file_bytes"] = None  # 업로드 파일 바이트 보존
+if "uploaded_file_name" not in st.session_state:
+    st.session_state["uploaded_file_name"] = None
 
 
 # =====================================================
@@ -283,10 +292,46 @@ if "last_final_params" not in st.session_state:
 
 st.title("🚚 AI 집배순로 최적화")
 
+# =====================================================
+# 캐시 상태 표시
+# =====================================================
 
-# =====================================================
-# 알고리즘 선택
-# =====================================================
+stats = cache_manager.get_stats()
+geo_size  = stats["geocode_cache_size"]
+road_size = stats["road_cache_size"]
+saved     = stats["api_calls_saved"]
+made      = stats["api_calls_made"]
+
+if geo_size > 0 or road_size > 0:
+    col_cs1, col_cs2, col_cs3, col_cs4 = st.columns([2, 2, 2, 1])
+    with col_cs1:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">📍 주소 캐시</div>'
+            f'<div class="metric-value green">{geo_size:,}건</div></div>',
+            unsafe_allow_html=True,
+        )
+    with col_cs2:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">🛣️ 경로 캐시</div>'
+            f'<div class="metric-value green">{road_size:,}건</div></div>',
+            unsafe_allow_html=True,
+        )
+    with col_cs3:
+        st.markdown(
+            f'<div class="metric-card"><div class="metric-label">✅ API 절약 / 신규호출</div>'
+            f'<div class="metric-value">{saved}건 / {made}건</div></div>',
+            unsafe_allow_html=True,
+        )
+    with col_cs4:
+        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
+        if st.button("🗑️ 캐시 초기화", help="주소가 대폭 바뀐 경우에만 사용하세요"):
+            cache_manager.clear_all_caches()
+            st.success("캐시가 초기화되었습니다.")
+            st.rerun()
+else:
+    st.info("💡 첫 실행 시 API를 호출하여 캐시를 구축합니다. 이후 실행부터는 캐시에서 즉시 로드됩니다.", icon="ℹ️")
+
+st.markdown("---")
 
 ui_algorithm = st.radio(
     "최적화 방식",
@@ -310,15 +355,23 @@ with col_upload:
         type=["xlsx"],
         label_visibility="collapsed",
     )
+    # 업로드된 파일을 session_state에 바이트로 보존 (다운로드 버튼 클릭 시 소멸 방지)
+    if uploaded_file is not None:
+        st.session_state["uploaded_file_bytes"] = uploaded_file.read()
+        st.session_state["uploaded_file_name"]  = uploaded_file.name
+        uploaded_file.seek(0)
+
     st.caption("출발지 · 도착지 · 통상코스 · 통상순로 컬럼 포함")
 
     st.markdown("##### 📱 샘플 데이터 체험")
-    use_sample = st.button(
+    if st.button(
         "🚀 샘플 데이터로 바로 실행",
         type="primary",
         use_container_width=True,
         help="부산 동구 2코스·20건으로 즉시 체험",
-    )
+    ):
+        st.session_state["sample_triggered"] = True
+        st.session_state["run_triggered"]    = False
     st.caption("파일 없이도 바로 체험 가능")
 
 with col_params:
@@ -366,32 +419,34 @@ st.markdown(
     ">
     🔒 <b>개인정보 안내</b> &nbsp;
     입력된 주소 데이터는 경로 최적화 목적으로만 사용됩니다.
-    도로명 주소는 공개 정보이며 개인 식별 정보를 포함하지 않습니다.
+    도로명 주소는 공개 정보이며 개인 식별 정보(성명·연락처 등)를 포함하지 않습니다.
     주소 좌표 변환 시 네이버 지도 API를 경유하며, 그 외 외부 전송은 없습니다.
+    개인 식별 정보 혼입 여부를 자동 검사하며, API 호출 내역은 로컬 로그(privacy_log.txt)에 기록됩니다.
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 
+
 # =====================================================
 # 실행 대상 결정
 # =====================================================
 
+use_sample  = st.session_state["sample_triggered"]
 target_file = None
 
 if use_sample:
     target_file = make_sample_excel()
     st.info("📋 샘플 데이터 사용 중 — 부산 동구 2코스·20건", icon="ℹ️")
-elif uploaded_file is not None:
-    target_file = uploaded_file
+elif st.session_state["uploaded_file_bytes"] is not None:
+    target_file = io.BytesIO(st.session_state["uploaded_file_bytes"])
+    target_file.name = st.session_state["uploaded_file_name"] or "uploaded.xlsx"
     st.success("✅ 업로드 완료")
 
-    # ── ⑥ 데이터 미리보기 ─────────────────────────────────────
+    # ── 데이터 미리보기 ─────────────────────────────────────
     try:
-        uploaded_file.seek(0)
-        df_preview = pd.read_excel(uploaded_file)
-        uploaded_file.seek(0)   # 이후 process_excel이 다시 읽을 수 있도록 되감기
+        df_preview = pd.read_excel(io.BytesIO(st.session_state["uploaded_file_bytes"]))
 
         course_cnt  = df_preview["통상코스"].nunique() if "통상코스" in df_preview.columns else "?"
         point_cnt   = len(df_preview)
@@ -430,7 +485,16 @@ if target_file is not None:
 
     run_label = "샘플 데이터 최적화 실행" if use_sample else "⚡ 최적화 실행"
 
-    if use_sample or st.button(run_label, type="primary", width='stretch'):
+    # 결과가 없을 때만 실행 버튼 표시
+    if not st.session_state.get("last_result"):
+        if st.button(run_label, type="primary", width="stretch"):
+            st.session_state["run_triggered"] = True
+            st.rerun()
+
+    should_run = st.session_state["run_triggered"] or st.session_state["sample_triggered"]
+
+    # 결과가 없을 때만 실행 (다운로드 버튼 등 리렌더링 시 재실행 방지)
+    if should_run and st.session_state.get("last_result") is None:
 
         algo_key = "corse7" if ui_algorithm.startswith("corse7") else "corse8"
 
@@ -453,7 +517,7 @@ if target_file is not None:
 
         update_progress(0, "")
 
-        # ── ④ 예외처리 ────────────────────────────────────────
+        # ── 예외처리 ────────────────────────────────────────
         try:
             with st.spinner("AI 최적화 진행중..."):
                 process_fn = process7 if algo_key == "corse7" else process8
@@ -465,7 +529,7 @@ if target_file is not None:
 
             moto_bar.markdown("**━━━━━━━━━━━━━━━━━━━🏁** `완료!`")
 
-            # 결과 session_state 저장
+            # 결과 session_state 저장 후 트리거 초기화
             st.session_state["last_result"] = result
             st.session_state["last_final_params"] = {
                 "algorithm":           algo_key,
@@ -474,12 +538,18 @@ if target_file is not None:
                 "working_days":        ui_working_days,
             }
             st.session_state["ai_interpretation"] = None
+            st.session_state["run_triggered"]    = False
+            st.session_state["sample_triggered"] = False
 
         except ValueError as e:
             moto_bar.empty()
+            st.session_state["run_triggered"]    = False
+            st.session_state["sample_triggered"] = False
             st.error(f"⚠️ 데이터 오류: {e}\n\n엑셀 파일의 컬럼명(출발지·도착지·통상코스·통상순로)을 확인해주세요.")
         except Exception as e:
             moto_bar.empty()
+            st.session_state["run_triggered"]    = False
+            st.session_state["sample_triggered"] = False
             st.error(f"⚠️ 최적화 중 오류가 발생했습니다: {e}")
 
 
@@ -488,6 +558,16 @@ if target_file is not None:
 # =====================================================
 
 if st.session_state.get("last_result"):
+
+    # 새 최적화 실행 버튼
+    if st.button("🔄 새 최적화 실행", help="결과를 초기화하고 처음부터 다시 시작합니다"):
+        st.session_state["last_result"]        = None
+        st.session_state["last_final_params"]  = None
+        st.session_state["ai_interpretation"]  = None
+        st.session_state["run_triggered"]      = False
+        st.session_state["sample_triggered"]   = False
+        st.session_state["uploaded_file_bytes"] = None
+        st.rerun()
 
     result       = st.session_state["last_result"]
     final_params = st.session_state["last_final_params"]
