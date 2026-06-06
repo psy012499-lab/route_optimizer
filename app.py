@@ -2,7 +2,6 @@ import streamlit as st
 import io
 import os
 import zipfile
-import json
 import pandas as pd
 import requests as _requests
 
@@ -11,121 +10,37 @@ from corse8_optimizer import process_excel as process8
 
 
 # =====================================================
-# Claude AI — 자연어 파라미터 파싱
+# 설정 상수
 # =====================================================
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 HAIKU_MODEL       = "claude-haiku-4-5-20251001"
 
-DEFAULT_PARAMS = {
-    "algorithm":            None,   # None = UI 라디오 값 사용
-    "cost_per_km":          925,
-    "labor_cost_per_hour":  17000,
-    "working_days":         21,
-    "target_courses":       None,   # None = 전체 코스
-}
-
-def call_claude(system: str, user: str, max_tokens: int = 800) -> str:
-    headers = {
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
-    payload = {
-        "model": HAIKU_MODEL,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{"role": "user", "content": user}],
-    }
-    try:
-        resp = _requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        return resp.json()["content"][0]["text"]
-    except Exception as e:
-        return f"[API 오류] {e}"
-
-
-def parse_params_from_nl(user_input: str, current_params: dict) -> tuple[dict, str]:
-    """
-    자연어 입력 → 파라미터 dict + 사람이 읽을 수 있는 변경 요약 반환
-    """
-    system = """당신은 우편 집배 경로 최적화 시스템의 파라미터 파서입니다.
-사용자의 자연어 지시에서 변경할 파라미터를 추출하세요.
-
-추출 가능한 파라미터:
-- algorithm: "corse7" 또는 "corse8" (언급 없으면 null)
-- cost_per_km: 정수 (원/km, 언급 없으면 null)
-- labor_cost_per_hour: 정수 (원/시간, 언급 없으면 null)
-- working_days: 정수 (월 근무일, 언급 없으면 null)
-- target_courses: 정수 배열 (특정 코스 번호들, 전체이면 null)
-
-반드시 아래 JSON 형식만 출력하세요. 설명 없이 JSON만:
-{
-  "params": {
-    "algorithm": null,
-    "cost_per_km": null,
-    "labor_cost_per_hour": null,
-    "working_days": null,
-    "target_courses": null
-  },
-  "summary": "변경사항을 한 문장으로 설명"
-}"""
-
-    user = f"""현재 파라미터:
-- 알고리즘: {current_params.get('algorithm', 'UI 선택값')}
-- 운송비: {current_params['cost_per_km']}원/km
-- 인건비: {current_params['labor_cost_per_hour']}원/시간
-- 월 근무일: {current_params['working_days']}일
-- 대상 코스: {current_params.get('target_courses') or '전체'}
-
-사용자 지시: {user_input}"""
-
-    raw = call_claude(system, user, max_tokens=400)
-
-    try:
-        # JSON 블록만 추출
-        raw_clean = raw.strip()
-        if "```" in raw_clean:
-            raw_clean = raw_clean.split("```")[1]
-            if raw_clean.startswith("json"):
-                raw_clean = raw_clean[4:]
-        parsed = json.loads(raw_clean)
-        extracted = parsed.get("params", {})
-        summary   = parsed.get("summary", "파라미터가 업데이트되었습니다.")
-
-        # 기존 파라미터에 null 아닌 값만 덮어쓰기
-        new_params = current_params.copy()
-        for key, val in extracted.items():
-            if val is not None:
-                new_params[key] = val
-
-        return new_params, summary
-
-    except Exception:
-        return current_params, f"파싱 실패 — 원본 응답: {raw[:200]}"
+DEFAULT_COST_PER_KM        = 925
+DEFAULT_LABOR_COST_PER_HOUR = 17000
+DEFAULT_WORKING_DAYS        = 21
 
 
 # =====================================================
 # Claude AI — 결과 자연어 해석
 # =====================================================
 
-def build_summary_text(summary: pd.DataFrame, algorithm_name: str, params: dict) -> str:
+def build_summary_text(summary: pd.DataFrame, algorithm_name: str,
+                        cost_per_km: int, labor_cost: int, working_days: int) -> str:
     try:
-        saving_row = summary[summary["구분"] == "절감효과"]
-        if saving_row.empty:
-            saving_row = summary.iloc[-1:]
-
         lines = [
             f"알고리즘: {algorithm_name}",
-            f"운송비 단가: {params['cost_per_km']}원/km",
-            f"인건비 단가: {params['labor_cost_per_hour']}원/시간",
-            f"월 근무일: {params['working_days']}일",
+            f"운송비 단가: {cost_per_km}원/km",
+            f"인건비 단가: {labor_cost}원/시간",
+            f"월 근무일: {working_days}일",
         ]
         for col in summary.columns:
             if col == "구분":
                 continue
             orig_val  = summary[summary["구분"] == "원본"][col].values
             opt_val   = summary[summary["구분"] == "최적화"][col].values
-            saved_val = saving_row[col].values
+            saved_row = summary[summary["구분"] == "절감효과"]
+            saved_val = saved_row[col].values if not saved_row.empty else summary.iloc[-1:][col].values
             if len(orig_val)  > 0 and str(orig_val[0])  not in ("None", "nan", ""):
                 lines.append(f"  원본 {col}: {orig_val[0]}")
             if len(opt_val)   > 0 and str(opt_val[0])   not in ("None", "nan", ""):
@@ -154,7 +69,22 @@ def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
         f"{summary_text}\n\n"
         "이 결과를 분석하여 우편집중국 담당자가 이해하기 쉽게 해석해 주세요."
     )
-    return call_claude(system, user, max_tokens=800)
+    headers = {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    payload = {
+        "model": HAIKU_MODEL,
+        "max_tokens": 800,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+    }
+    try:
+        resp = _requests.post(ANTHROPIC_API_URL, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"]
+    except Exception as e:
+        return f"AI 해석 생성 중 오류가 발생했습니다: {e}"
 
 
 # =====================================================
@@ -174,6 +104,7 @@ html, body, [class*="css"] { font-size: 15px; }
 h1 { font-size: 1.5rem !important; }
 h2 { font-size: 1.2rem !important; }
 h3 { font-size: 1.05rem !important; }
+
 .metric-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -188,16 +119,16 @@ h3 { font-size: 1.05rem !important; }
 }
 .metric-label { font-size: 11px; color: #666; margin-bottom: 4px; }
 .metric-value { font-size: 1.35rem; font-weight: 700; color: #1C2B4A; }
-.metric-sub   { font-size: 11px; color: #888; margin-top: 2px; }
 .metric-value.highlight { color: #E67E22; }
 .metric-value.green     { color: #2e7d32; }
+
 .stDataFrame { overflow-x: auto !important; }
 .stDataFrame table { font-size: 12px !important; }
 .stDataFrame th, .stDataFrame td { padding: 4px 8px !important; white-space: nowrap; }
 .stButton > button { min-height: 48px; font-size: 15px; }
 .stDownloadButton > button { min-height: 44px; font-size: 14px; }
 .stTabs [data-baseweb="tab"] { font-size: 13px; padding: 6px 12px; }
-/* 파라미터 변경 박스 */
+
 .param-box {
     background: #f8f4ff;
     border-left: 4px solid #7F77DD;
@@ -206,7 +137,6 @@ h3 { font-size: 1.05rem !important; }
     margin: 8px 0 12px;
     font-size: 13px;
     line-height: 1.7;
-    color: #26215C;
 }
 .param-tag {
     display: inline-block;
@@ -218,7 +148,6 @@ h3 { font-size: 1.05rem !important; }
     font-weight: 600;
     margin: 2px 3px;
 }
-/* AI 해석 박스 */
 .ai-box {
     background: #f0f7ff;
     border-left: 4px solid #1C6EBF;
@@ -303,15 +232,12 @@ def render_summary_cards(summary_df: pd.DataFrame):
         def fmt_val(col_name, raw_str, fval):
             c = col_name.lower()
             if any(k in c for k in ["절감액", "비용", "원"]):
-                if "천원" in col_name:
-                    return f"{fval:,.0f}천원"
+                if fval >= 1_000_000:
+                    return f"{fval/1000:,.0f}천원"
+                elif fval >= 1_000:
+                    return f"{fval/1000:.1f}천원"
                 else:
-                    if fval >= 1_000_000:
-                        return f"{fval/1000:,.0f}천원"
-                    elif fval >= 1_000:
-                        return f"{fval/1000:.1f}천원"
-                    else:
-                        return f"{fval:,.0f}원"
+                    return f"{fval:,.0f}원"
             return raw_str
 
         html = '<div class="metric-grid">'
@@ -334,12 +260,12 @@ def render_summary_cards(summary_df: pd.DataFrame):
 # session_state 초기화
 # =====================================================
 
-if "run_params" not in st.session_state:
-    st.session_state["run_params"] = DEFAULT_PARAMS.copy()
-if "param_log" not in st.session_state:
-    st.session_state["param_log"] = []
 if "ai_interpretation" not in st.session_state:
     st.session_state["ai_interpretation"] = None
+if "last_result" not in st.session_state:
+    st.session_state["last_result"] = None
+if "last_final_params" not in st.session_state:
+    st.session_state["last_final_params"] = None
 
 
 # =====================================================
@@ -347,6 +273,7 @@ if "ai_interpretation" not in st.session_state:
 # =====================================================
 
 st.title("🚚 AI 집배순로 최적화")
+
 
 # =====================================================
 # 알고리즘 선택
@@ -360,8 +287,9 @@ ui_algorithm = st.radio(
 
 st.markdown("---")
 
+
 # =====================================================
-# 📂 파일 업로드  +  ⚙️ 기본값 설정  (나란히 배치)
+# 📂 파일 업로드  +  ⚙️ 기본값 설정 (나란히 배치)
 # =====================================================
 
 col_upload, col_params = st.columns([1, 1], gap="large")
@@ -388,13 +316,11 @@ with col_params:
     st.markdown("##### ⚙️ 기본값 설정")
     st.caption("우리 기관 근무여건에 맞게 입력하세요")
 
-    p = st.session_state["run_params"]
-
     ui_cost_per_km = st.number_input(
         "운송비 (원 / km)",
         min_value=100,
         max_value=10000,
-        value=int(p["cost_per_km"]),
+        value=DEFAULT_COST_PER_KM,
         step=25,
         help="km당 운송 단가",
     )
@@ -402,7 +328,7 @@ with col_params:
         "인건비 (원 / 시간)",
         min_value=1000,
         max_value=100000,
-        value=int(p["labor_cost_per_hour"]),
+        value=DEFAULT_LABOR_COST_PER_HOUR,
         step=500,
         help="시간당 인건비 단가",
     )
@@ -410,75 +336,10 @@ with col_params:
         "근무일수 (일 / 월)",
         min_value=1,
         max_value=31,
-        value=int(p["working_days"]),
+        value=DEFAULT_WORKING_DAYS,
         step=1,
         help="월 평균 근무일수",
     )
-
-    # UI 입력값 즉시 반영
-    st.session_state["run_params"]["cost_per_km"]         = ui_cost_per_km
-    st.session_state["run_params"]["labor_cost_per_hour"] = ui_labor_cost
-    st.session_state["run_params"]["working_days"]        = ui_working_days
-
-st.markdown("---")
-
-# =====================================================
-# 🤖 AI 자연어 파라미터 조정 (Agent 입력창)
-# =====================================================
-
-st.markdown("##### 🤖 AI 자연어 파라미터 조정")
-st.caption("위 기본값 외에 추가 조건을 자연어로 입력 · 예: \"CORSE8로 바꾸고 코스 1번만 최적화해줘\"")
-
-nl_input = st.text_input(
-    label="파라미터 지시",
-    placeholder="예) CORSE8로 바꾸고 코스 1번만 최적화해줘",
-    label_visibility="collapsed",
-)
-
-col_apply, col_reset = st.columns([1, 1])
-with col_apply:
-    apply_btn = st.button("✨ AI 파라미터 적용", use_container_width=True, type="primary")
-with col_reset:
-    reset_btn = st.button("↺ 기본값으로 초기화", use_container_width=True)
-
-if reset_btn:
-    st.session_state["run_params"] = DEFAULT_PARAMS.copy()
-    st.session_state["param_log"]  = []
-    st.session_state["ai_interpretation"] = None
-    st.rerun()
-
-if apply_btn and nl_input.strip():
-    with st.spinner("Claude AI가 지시를 분석 중..."):
-        new_params, summary_msg = parse_params_from_nl(
-            nl_input,
-            st.session_state["run_params"]
-        )
-    st.session_state["run_params"] = new_params
-    st.session_state["param_log"].append(summary_msg)
-    st.session_state["ai_interpretation"] = None
-    st.rerun()
-
-# 현재 적용 파라미터 태그 요약
-p = st.session_state["run_params"]
-algo_display    = p["algorithm"] or ("corse7" if ui_algorithm.startswith("corse7") else "corse8")
-courses_display = f"코스 {p['target_courses']}" if p.get("target_courses") else "전체 코스"
-
-tags_html = (
-    f'<span class="param-tag">알고리즘: {algo_display.upper()}</span>'
-    f'<span class="param-tag">운송비: {p["cost_per_km"]:,}원/km</span>'
-    f'<span class="param-tag">인건비: {p["labor_cost_per_hour"]:,}원/h</span>'
-    f'<span class="param-tag">월 근무일: {p["working_days"]}일</span>'
-    f'<span class="param-tag">대상: {courses_display}</span>'
-)
-log_html = ""
-if st.session_state["param_log"]:
-    last = st.session_state["param_log"][-1]
-    log_html = f'<div style="margin-top:8px; font-size:12px; color:#534AB7;">📝 {last}</div>'
-
-st.markdown(
-    f'<div class="param-box">{tags_html}{log_html}</div>',
-    unsafe_allow_html=True,
-)
 
 st.markdown("---")
 
@@ -507,28 +368,19 @@ if target_file is not None:
 
     if use_sample or st.button(run_label, type="primary", width='stretch'):
 
-        # 최종 파라미터 결정
-        final_params = st.session_state["run_params"].copy()
-        if final_params["algorithm"] is None:
-            final_params["algorithm"] = "corse7" if ui_algorithm.startswith("corse7") else "corse8"
+        algo_key = "corse7" if ui_algorithm.startswith("corse7") else "corse8"
 
-        algo_label = (
-            "CORSE7 (통상순로 최적화)"
-            if final_params["algorithm"] == "corse7"
-            else "CORSE8 (통상순로+코스 최적화)"
-        )
-
-        # optimizer에 파라미터 주입
+        # optimizer 파라미터 주입
         import corse7_optimizer as c7
         import corse8_optimizer as c8
         for mod in (c7, c8):
-            mod.COST_PER_KM          = final_params["cost_per_km"]
-            mod.LABOR_COST_PER_HOUR  = final_params["labor_cost_per_hour"]
+            mod.COST_PER_KM         = ui_cost_per_km
+            mod.LABOR_COST_PER_HOUR = ui_labor_cost
 
         moto_bar = st.empty()
 
         def update_progress(pct, msg):
-            pct = max(0, min(100, pct))
+            pct    = max(0, min(100, pct))
             total  = 20
             filled = int(pct / 100 * total)
             empty  = total - filled - 1
@@ -538,143 +390,172 @@ if target_file is not None:
         update_progress(0, "")
 
         with st.spinner("AI 최적화 진행중..."):
-            process_fn = process7 if final_params["algorithm"] == "corse7" else process8
+            process_fn = process7 if algo_key == "corse7" else process8
             result = process_fn(
                 target_file,
                 progress_callback=update_progress,
-                target_courses=final_params.get("target_courses"),
-                working_days=int(final_params["working_days"]),
+                working_days=int(ui_working_days),
             )
 
         moto_bar.markdown("**━━━━━━━━━━━━━━━━━━━🏁** `완료!`")
-        st.success("🎉 최적화 완료!")
 
-        # ── 적용된 파라미터 확인 배너 ─────────────────────────────
-        courses_banner = "전체 코스" if not final_params.get("target_courses") else f"코스 {final_params['target_courses']}"
+        # 결과 session_state 저장
+        st.session_state["last_result"] = result
+        st.session_state["last_final_params"] = {
+            "algorithm":           algo_key,
+            "cost_per_km":         ui_cost_per_km,
+            "labor_cost_per_hour": ui_labor_cost,
+            "working_days":        ui_working_days,
+        }
+        st.session_state["ai_interpretation"] = None
+
+
+# =====================================================
+# 결과 표시 — session_state 기반으로 항상 유지
+# =====================================================
+
+if st.session_state.get("last_result"):
+
+    result       = st.session_state["last_result"]
+    final_params = st.session_state["last_final_params"]
+
+    algo_label = (
+        "CORSE7 (통상순로 최적화)"
+        if final_params["algorithm"] == "corse7"
+        else "CORSE8 (통상순로+코스 최적화)"
+    )
+
+    st.success("🎉 최적화 완료!")
+
+    # 실행 파라미터 배너
+    st.markdown(
+        f'<div class="param-box">'
+        f'<b>실행 파라미터</b> &nbsp;'
+        f'<span class="param-tag">{final_params["algorithm"].upper()}</span>'
+        f'<span class="param-tag">운송비 {final_params["cost_per_km"]:,}원/km</span>'
+        f'<span class="param-tag">인건비 {final_params["labor_cost_per_hour"]:,}원/h</span>'
+        f'<span class="param-tag">월 {final_params["working_days"]}일</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── 요약 결과 ─────────────────────────────────────────────
+    st.markdown("#### 📊 요약 결과")
+    summary = result["summary"]
+    card_ok = render_summary_cards(summary)
+
+    with st.expander("📋 상세 요약 테이블 보기", expanded=not card_ok):
+        st.dataframe(summary, width='stretch')
+
+    # ── 엑셀 다운로드 ─────────────────────────────────────────
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        result["df_original"].to_excel(writer, sheet_name="원본", index=False)
+        result["df_optimized"].to_excel(writer, sheet_name="최적화", index=False)
+        result["summary"].to_excel(writer, sheet_name="요약", index=False)
+
+    st.download_button(
+        label="📥 결과 엑셀 다운로드",
+        data=excel_buffer.getvalue(),
+        file_name="최적화_결과.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    # ── AI 결과 해석 ──────────────────────────────────────────
+    st.markdown("#### 🤖 AI 결과 해석")
+
+    col_btn, _ = st.columns([1, 2])
+    with col_btn:
+        gen_btn = st.button("✨ AI 해석 생성", type="primary", use_container_width=True)
+
+    if gen_btn:
+        with st.spinner("Claude AI가 결과를 분석 중입니다..."):
+            summary_text   = build_summary_text(
+                summary, algo_label,
+                final_params["cost_per_km"],
+                final_params["labor_cost_per_hour"],
+                final_params["working_days"],
+            )
+            interpretation = call_claude_interpretation(summary_text, algo_label)
+            st.session_state["ai_interpretation"] = interpretation
+
+    if st.session_state.get("ai_interpretation"):
         st.markdown(
-            f'<div class="param-box" style="margin-bottom:16px;">'
-            f'<b>실행 파라미터</b> &nbsp;'
-            f'<span class="param-tag">{final_params["algorithm"].upper()}</span>'
-            f'<span class="param-tag">운송비 {final_params["cost_per_km"]:,}원/km</span>'
-            f'<span class="param-tag">인건비 {final_params["labor_cost_per_hour"]:,}원/h</span>'
-            f'<span class="param-tag">월 {final_params["working_days"]}일</span>'
-            f'<span class="param-tag">대상: {courses_banner}</span>'
+            f'<div class="ai-box">'
+            f'{st.session_state["ai_interpretation"].replace(chr(10), "<br>")}'
             f'</div>',
             unsafe_allow_html=True,
         )
-
-        # ── 요약 결과 ─────────────────────────────────────────────
-        st.markdown("#### 📊 요약 결과")
-        summary = result["summary"]
-        card_ok = render_summary_cards(summary)
-
-        with st.expander("📋 상세 요약 테이블 보기", expanded=not card_ok):
-            st.dataframe(summary, width='stretch')
-
-        # ── 엑셀 다운로드 ─────────────────────────────────────────
-        excel_buffer = io.BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-            result["df_original"].to_excel(writer, sheet_name="원본", index=False)
-            result["df_optimized"].to_excel(writer, sheet_name="최적화", index=False)
-            result["summary"].to_excel(writer, sheet_name="요약", index=False)
-
         st.download_button(
-            label="📥 결과 엑셀 다운로드",
-            data=excel_buffer.getvalue(),
-            file_name="최적화_결과.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            label="📄 AI 해석 텍스트 저장",
+            data=st.session_state["ai_interpretation"],
+            file_name="AI_결과해석.txt",
+            mime="text/plain",
         )
 
-        # ── AI 결과 해석 ──────────────────────────────────────────
-        st.markdown("#### 🤖 AI 결과 해석")
+    # ── 지도 비교 ─────────────────────────────────────────────
+    st.markdown("#### 🗺️ 지도 비교")
 
-        col_btn, _ = st.columns([1, 2])
-        with col_btn:
-            gen_btn = st.button("✨ AI 해석 생성", type="primary", use_container_width=True)
+    course_count = len(result.get("compare_maps", []))
 
-        if gen_btn:
-            with st.spinner("Claude AI가 결과를 분석 중입니다..."):
-                summary_text   = build_summary_text(summary, algo_label, final_params)
-                interpretation = call_claude_interpretation(summary_text, algo_label)
-                st.session_state["ai_interpretation"] = interpretation
+    if course_count == 0:
+        st.warning("생성된 지도가 없습니다.")
+    else:
+        MAP_HEIGHT  = 450
+        course_tabs = st.tabs([f"코스 {i+1}" for i in range(course_count)])
 
-        if st.session_state.get("ai_interpretation"):
-            st.markdown(
-                f'<div class="ai-box">'
-                f'{st.session_state["ai_interpretation"].replace(chr(10), "<br>")}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            st.download_button(
-                label="📄 AI 해석 텍스트 저장",
-                data=st.session_state["ai_interpretation"],
-                file_name="AI_결과해석.txt",
-                mime="text/plain",
-            )
+        for i, tab in enumerate(course_tabs):
+            with tab:
+                map_tabs = st.tabs(["원본 🔴", "최적화 🔵", "비교"])
 
-        # ── 지도 비교 ─────────────────────────────────────────────
-        st.markdown("#### 🗺️ 지도 비교")
+                with map_tabs[0]:
+                    with open(result["original_maps"][i], "r", encoding="utf-8") as f:
+                        original_html = f.read()
+                    st.iframe(original_html, height=MAP_HEIGHT)
+                    st.download_button(
+                        label="📥 원본 지도 다운로드",
+                        data=original_html.encode("utf-8"),
+                        file_name=os.path.basename(result["original_maps"][i]),
+                        mime="text/html",
+                        key=f"orig_{i}",
+                    )
 
-        course_count = len(result.get("compare_maps", []))
+                with map_tabs[1]:
+                    with open(result["optimized_maps"][i], "r", encoding="utf-8") as f:
+                        optimized_html = f.read()
+                    st.iframe(optimized_html, height=MAP_HEIGHT)
+                    st.download_button(
+                        label="📥 최적화 지도 다운로드",
+                        data=optimized_html.encode("utf-8"),
+                        file_name=os.path.basename(result["optimized_maps"][i]),
+                        mime="text/html",
+                        key=f"opt_{i}",
+                    )
 
-        if course_count == 0:
-            st.warning("생성된 지도가 없습니다.")
-        else:
-            MAP_HEIGHT  = 450
-            course_tabs = st.tabs([f"코스 {i+1}" for i in range(course_count)])
+                with map_tabs[2]:
+                    with open(result["compare_maps"][i], "r", encoding="utf-8") as f:
+                        compare_html = f.read()
+                    st.iframe(compare_html, height=MAP_HEIGHT)
+                    st.download_button(
+                        label="📥 비교 지도 다운로드",
+                        data=compare_html.encode("utf-8"),
+                        file_name=os.path.basename(result["compare_maps"][i]),
+                        mime="text/html",
+                        key=f"cmp_{i}",
+                    )
 
-            for i, tab in enumerate(course_tabs):
-                with tab:
-                    map_tabs = st.tabs(["원본 🔴", "최적화 🔵", "비교"])
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in result["original_maps"]:
+                zf.write(path, os.path.basename(path))
+            for path in result["optimized_maps"]:
+                zf.write(path, os.path.basename(path))
+            for path in result["compare_maps"]:
+                zf.write(path, os.path.basename(path))
 
-                    with map_tabs[0]:
-                        with open(result["original_maps"][i], "r", encoding="utf-8") as f:
-                            original_html = f.read()
-                        st.iframe(original_html, height=MAP_HEIGHT)
-                        st.download_button(
-                            label="📥 원본 지도 다운로드",
-                            data=original_html.encode("utf-8"),
-                            file_name=os.path.basename(result["original_maps"][i]),
-                            mime="text/html",
-                            key=f"orig_{i}",
-                        )
-
-                    with map_tabs[1]:
-                        with open(result["optimized_maps"][i], "r", encoding="utf-8") as f:
-                            optimized_html = f.read()
-                        st.iframe(optimized_html, height=MAP_HEIGHT)
-                        st.download_button(
-                            label="📥 최적화 지도 다운로드",
-                            data=optimized_html.encode("utf-8"),
-                            file_name=os.path.basename(result["optimized_maps"][i]),
-                            mime="text/html",
-                            key=f"opt_{i}",
-                        )
-
-                    with map_tabs[2]:
-                        with open(result["compare_maps"][i], "r", encoding="utf-8") as f:
-                            compare_html = f.read()
-                        st.iframe(compare_html, height=MAP_HEIGHT)
-                        st.download_button(
-                            label="📥 비교 지도 다운로드",
-                            data=compare_html.encode("utf-8"),
-                            file_name=os.path.basename(result["compare_maps"][i]),
-                            mime="text/html",
-                            key=f"cmp_{i}",
-                        )
-
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for path in result["original_maps"]:
-                    zf.write(path, os.path.basename(path))
-                for path in result["optimized_maps"]:
-                    zf.write(path, os.path.basename(path))
-                for path in result["compare_maps"]:
-                    zf.write(path, os.path.basename(path))
-
-            st.download_button(
-                label="🗺️ 지도 전체 ZIP 다운로드",
-                data=zip_buffer.getvalue(),
-                file_name="최적화_지도.zip",
-                mime="application/zip",
-            )
+        st.download_button(
+            label="🗺️ 지도 전체 ZIP 다운로드",
+            data=zip_buffer.getvalue(),
+            file_name="최적화_지도.zip",
+            mime="application/zip",
+        )
