@@ -1,3 +1,27 @@
+# =========================================================
+# AI 집배순로 최적화 시스템 — app.py
+# =========================================================
+#
+# ▶ 시스템 개요
+#   집배원의 통상코스·통상순로 데이터를 입력받아
+#   네이버 Maps AI API + Haversine 하이브리드 알고리즘으로
+#   실도로 기반 최적 순로를 자동 산출하는 웹 기반 업무개선 시스템
+#
+# ▶ 주요 구성
+#   - app.py            : Streamlit 웹 UI · 사용자 입출력 관리
+#   - corse7_optimizer  : 통상코스 유지 · 코스 내 순로 최적화
+#   - corse8_optimizer  : 통상코스 경계 초월 · 전체 통합 최적화
+#   - cache_manager     : geocode · 도로거리 캐시 통합 관리
+#
+# ▶ AI 활용
+#   - 네이버 Geocode API  : 주소 → 좌표 변환
+#   - 네이버 Direction API: 실도로 거리·시간 계산
+#   - Claude AI (Haiku)   : 최적화 결과 자연어 해석
+#
+# ▶ 개발자: 부산우편집중국 물류총괄계장
+# ▶ 버전: 1.0.0
+# =========================================================
+
 import streamlit as st
 import io
 import os
@@ -8,7 +32,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import cache_manager
 from corse7_optimizer import process_excel as process7
 from corse8_optimizer import process_excel as process8
 
@@ -57,6 +80,19 @@ def build_summary_text(summary: pd.DataFrame, algorithm_name: str,
 
 
 def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
+    """
+    Claude AI를 활용한 최적화 결과 자연어 해석 함수.
+
+    ▶ 프롬프트 설계 의도
+      단순 수치 나열 대신 현장 관리자의 의사결정 흐름에 맞춰
+      3단계 구조로 설계:
+      1) [최적화 결과 요약]  — 핵심 수치를 2~3문장으로 압축
+      2) [절감 효과 분석]   — 비용·시간의 현업 의미 해석
+      3) [현장 적용 권고]   — 실무 적용 시 고려사항 안내
+      → 관리자가 보고서 없이 즉시 의사결정에 활용 가능하도록 설계
+
+    ▶ 모델 선택: claude-haiku (빠른 응답 · 비용 최소화)
+    """
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         return None
@@ -214,13 +250,31 @@ def make_sample_excel() -> io.BytesIO:
 
 def render_summary_cards(summary_df: pd.DataFrame):
     try:
+        # 절감효과 행 우선, 없으면 마지막 행
         mask = summary_df.astype(str).apply(
-            lambda col: col.str.contains("합계|전체|합 계|total", case=False, na=False)
+            lambda col: col.str.contains("합계|전체|합 계|total|절감효과", case=False, na=False)
         ).any(axis=1)
         row = summary_df[mask].iloc[0] if mask.any() else summary_df.iloc[-1]
 
+        # ── 절감률(%) 직접 계산해서 맨 앞 카드로 추가 ──────────
+        extra_cards = []
+        try:
+            orig_row = summary_df[summary_df["구분"] == "원본"]
+            opt_row  = summary_df[summary_df["구분"] == "최적화"]
+            dist_col = "총 이동거리(km)"
+            if dist_col in summary_df.columns and not orig_row.empty and not opt_row.empty:
+                orig_d = float(str(orig_row[dist_col].values[0]).replace(",", ""))
+                opt_d  = float(str(opt_row[dist_col].values[0]).replace(",", ""))
+                if orig_d > 0:
+                    rate = round((orig_d - opt_d) / orig_d * 100, 1)
+                    extra_cards.append(("이동거리 절감률", rate, f"▼{rate}%"))
+        except Exception:
+            pass
+
         num_cols = []
         for col in summary_df.columns:
+            if col == "구분":
+                continue
             val = row[col]
             try:
                 fval = float(str(val).replace(",", "").replace("%", ""))
@@ -228,7 +282,7 @@ def render_summary_cards(summary_df: pd.DataFrame):
             except (ValueError, TypeError):
                 pass
 
-        if not num_cols:
+        if not num_cols and not extra_cards:
             return False
 
         def card_class(col_name):
@@ -250,8 +304,10 @@ def render_summary_cards(summary_df: pd.DataFrame):
                     return f"{fval:,.0f}원"
             return raw_str
 
+        # extra_cards 먼저, 나머지 최대 5개
+        all_cards = extra_cards + num_cols
         html = '<div class="metric-grid">'
-        for col, fval, raw in num_cols[:6]:
+        for col, fval, raw in all_cards[:6]:
             cls   = card_class(col)
             value = fmt_val(col, raw, fval)
             html += f"""
@@ -276,14 +332,6 @@ if "last_result" not in st.session_state:
     st.session_state["last_result"] = None
 if "last_final_params" not in st.session_state:
     st.session_state["last_final_params"] = None
-if "run_triggered" not in st.session_state:
-    st.session_state["run_triggered"] = False   # 일반 파일 실행 트리거
-if "sample_triggered" not in st.session_state:
-    st.session_state["sample_triggered"] = False  # 샘플 실행 트리거
-if "uploaded_file_bytes" not in st.session_state:
-    st.session_state["uploaded_file_bytes"] = None  # 업로드 파일 바이트 보존
-if "uploaded_file_name" not in st.session_state:
-    st.session_state["uploaded_file_name"] = None
 
 
 # =====================================================
@@ -292,46 +340,21 @@ if "uploaded_file_name" not in st.session_state:
 
 st.title("🚚 AI 집배순로 최적화")
 
+# ── 네이버 API 키 사전 확인 ───────────────────────────────
+_naver_id     = os.getenv("NAVER_CLIENT_ID", "").strip()
+_naver_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
+if not _naver_id or not _naver_secret:
+    st.error(
+        "⛔ 네이버 지도 API 키가 설정되지 않았습니다.\n\n"
+        "`.env` 파일에 아래 항목을 추가해주세요:\n"
+        "```\nNAVER_CLIENT_ID=발급받은_ID\nNAVER_CLIENT_SECRET=발급받은_SECRET\n```"
+    )
+    st.stop()
+
+
 # =====================================================
-# 캐시 상태 표시
+# 알고리즘 선택
 # =====================================================
-
-stats = cache_manager.get_stats()
-geo_size  = stats["geocode_cache_size"]
-road_size = stats["road_cache_size"]
-saved     = stats["api_calls_saved"]
-made      = stats["api_calls_made"]
-
-if geo_size > 0 or road_size > 0:
-    col_cs1, col_cs2, col_cs3, col_cs4 = st.columns([2, 2, 2, 1])
-    with col_cs1:
-        st.markdown(
-            f'<div class="metric-card"><div class="metric-label">📍 주소 캐시</div>'
-            f'<div class="metric-value green">{geo_size:,}건</div></div>',
-            unsafe_allow_html=True,
-        )
-    with col_cs2:
-        st.markdown(
-            f'<div class="metric-card"><div class="metric-label">🛣️ 경로 캐시</div>'
-            f'<div class="metric-value green">{road_size:,}건</div></div>',
-            unsafe_allow_html=True,
-        )
-    with col_cs3:
-        st.markdown(
-            f'<div class="metric-card"><div class="metric-label">✅ API 절약 / 신규호출</div>'
-            f'<div class="metric-value">{saved}건 / {made}건</div></div>',
-            unsafe_allow_html=True,
-        )
-    with col_cs4:
-        st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
-        if st.button("🗑️ 캐시 초기화", help="주소가 대폭 바뀐 경우에만 사용하세요"):
-            cache_manager.clear_all_caches()
-            st.success("캐시가 초기화되었습니다.")
-            st.rerun()
-else:
-    st.info("💡 첫 실행 시 API를 호출하여 캐시를 구축합니다. 이후 실행부터는 캐시에서 즉시 로드됩니다.", icon="ℹ️")
-
-st.markdown("---")
 
 ui_algorithm = st.radio(
     "최적화 방식",
@@ -355,23 +378,15 @@ with col_upload:
         type=["xlsx"],
         label_visibility="collapsed",
     )
-    # 업로드된 파일을 session_state에 바이트로 보존 (다운로드 버튼 클릭 시 소멸 방지)
-    if uploaded_file is not None:
-        st.session_state["uploaded_file_bytes"] = uploaded_file.read()
-        st.session_state["uploaded_file_name"]  = uploaded_file.name
-        uploaded_file.seek(0)
-
     st.caption("출발지 · 도착지 · 통상코스 · 통상순로 컬럼 포함")
 
     st.markdown("##### 📱 샘플 데이터 체험")
-    if st.button(
+    use_sample = st.button(
         "🚀 샘플 데이터로 바로 실행",
         type="primary",
         use_container_width=True,
         help="부산 동구 2코스·20건으로 즉시 체험",
-    ):
-        st.session_state["sample_triggered"] = True
-        st.session_state["run_triggered"]    = False
+    )
     st.caption("파일 없이도 바로 체험 가능")
 
 with col_params:
@@ -428,25 +443,24 @@ st.markdown(
 )
 
 
-
 # =====================================================
 # 실행 대상 결정
 # =====================================================
 
-use_sample  = st.session_state["sample_triggered"]
 target_file = None
 
 if use_sample:
     target_file = make_sample_excel()
     st.info("📋 샘플 데이터 사용 중 — 부산 동구 2코스·20건", icon="ℹ️")
-elif st.session_state["uploaded_file_bytes"] is not None:
-    target_file = io.BytesIO(st.session_state["uploaded_file_bytes"])
-    target_file.name = st.session_state["uploaded_file_name"] or "uploaded.xlsx"
+elif uploaded_file is not None:
+    target_file = uploaded_file
     st.success("✅ 업로드 완료")
 
-    # ── 데이터 미리보기 ─────────────────────────────────────
+    # ── ⑥ 데이터 미리보기 ─────────────────────────────────────
     try:
-        df_preview = pd.read_excel(io.BytesIO(st.session_state["uploaded_file_bytes"]))
+        uploaded_file.seek(0)
+        df_preview = pd.read_excel(uploaded_file)
+        uploaded_file.seek(0)   # 이후 process_excel이 다시 읽을 수 있도록 되감기
 
         course_cnt  = df_preview["통상코스"].nunique() if "통상코스" in df_preview.columns else "?"
         point_cnt   = len(df_preview)
@@ -485,16 +499,7 @@ if target_file is not None:
 
     run_label = "샘플 데이터 최적화 실행" if use_sample else "⚡ 최적화 실행"
 
-    # 결과가 없을 때만 실행 버튼 표시
-    if not st.session_state.get("last_result"):
-        if st.button(run_label, type="primary", width="stretch"):
-            st.session_state["run_triggered"] = True
-            st.rerun()
-
-    should_run = st.session_state["run_triggered"] or st.session_state["sample_triggered"]
-
-    # 결과가 없을 때만 실행 (다운로드 버튼 등 리렌더링 시 재실행 방지)
-    if should_run and st.session_state.get("last_result") is None:
+    if use_sample or st.button(run_label, type="primary", width='stretch'):
 
         algo_key = "corse7" if ui_algorithm.startswith("corse7") else "corse8"
 
@@ -517,7 +522,7 @@ if target_file is not None:
 
         update_progress(0, "")
 
-        # ── 예외처리 ────────────────────────────────────────
+        # ── ④ 예외처리 ────────────────────────────────────────
         try:
             with st.spinner("AI 최적화 진행중..."):
                 process_fn = process7 if algo_key == "corse7" else process8
@@ -529,7 +534,7 @@ if target_file is not None:
 
             moto_bar.markdown("**━━━━━━━━━━━━━━━━━━━🏁** `완료!`")
 
-            # 결과 session_state 저장 후 트리거 초기화
+            # 결과 session_state 저장
             st.session_state["last_result"] = result
             st.session_state["last_final_params"] = {
                 "algorithm":           algo_key,
@@ -538,18 +543,20 @@ if target_file is not None:
                 "working_days":        ui_working_days,
             }
             st.session_state["ai_interpretation"] = None
-            st.session_state["run_triggered"]    = False
-            st.session_state["sample_triggered"] = False
+
+            # 실패 주소 알림
+            failed = result.get("failed_addresses", [])
+            if failed:
+                st.warning(
+                    f"⚠️ 좌표 변환 실패 주소 {len(failed)}건 — 해당 주소는 최적화에서 제외됩니다.\n\n"
+                    + "\n".join(f"  • {a}" for a in failed)
+                )
 
         except ValueError as e:
             moto_bar.empty()
-            st.session_state["run_triggered"]    = False
-            st.session_state["sample_triggered"] = False
             st.error(f"⚠️ 데이터 오류: {e}\n\n엑셀 파일의 컬럼명(출발지·도착지·통상코스·통상순로)을 확인해주세요.")
         except Exception as e:
             moto_bar.empty()
-            st.session_state["run_triggered"]    = False
-            st.session_state["sample_triggered"] = False
             st.error(f"⚠️ 최적화 중 오류가 발생했습니다: {e}")
 
 
@@ -558,16 +565,6 @@ if target_file is not None:
 # =====================================================
 
 if st.session_state.get("last_result"):
-
-    # 새 최적화 실행 버튼
-    if st.button("🔄 새 최적화 실행", help="결과를 초기화하고 처음부터 다시 시작합니다"):
-        st.session_state["last_result"]        = None
-        st.session_state["last_final_params"]  = None
-        st.session_state["ai_interpretation"]  = None
-        st.session_state["run_triggered"]      = False
-        st.session_state["sample_triggered"]   = False
-        st.session_state["uploaded_file_bytes"] = None
-        st.rerun()
 
     result       = st.session_state["last_result"]
     final_params = st.session_state["last_final_params"]
@@ -579,6 +576,14 @@ if st.session_state.get("last_result"):
     )
 
     st.success("🎉 최적화 완료!")
+
+    # 실패 주소 — session_state 기반으로 항상 표시
+    failed_addrs = result.get("failed_addresses", [])
+    if failed_addrs:
+        st.warning(
+            f"⚠️ 좌표 변환 실패 주소 {len(failed_addrs)}건 — 최적화에서 제외됩니다.\n\n"
+            + "\n".join(f"  • {a}" for a in failed_addrs)
+        )
 
     # 실행 파라미터 배너
     st.markdown(
@@ -606,6 +611,12 @@ if st.session_state.get("last_result"):
         result["df_original"].to_excel(writer, sheet_name="원본", index=False)
         result["df_optimized"].to_excel(writer, sheet_name="최적화", index=False)
         result["summary"].to_excel(writer, sheet_name="요약", index=False)
+        # 실패 주소 시트 — 변환 실패 건이 있을 때만 추가
+        failed = result.get("failed_addresses", [])
+        if failed:
+            pd.DataFrame({"좌표변환 실패 주소": failed}).to_excel(
+                writer, sheet_name="변환실패", index=False
+            )
 
     st.download_button(
         label="📥 결과 엑셀 다운로드",
@@ -657,6 +668,52 @@ if st.session_state.get("last_result"):
                 st.session_state["ai_interpretation"] = None
                 st.rerun()
 
+    # ── 전국 절감 추정 계산기 ─────────────────────────────────
+    st.markdown("#### 🇰🇷 전국 절감 추정 계산기")
+    st.caption("집배원 수를 조정하면 전국 절감 추정액이 실시간으로 계산됩니다")
+
+    col_slider, col_result = st.columns([2, 1])
+    with col_slider:
+        national_workers = st.slider(
+            "전국 집배원 수 (명)",
+            min_value=1000,
+            max_value=30000,
+            value=17000,
+            step=500,
+            help="우정사업본부 기준 약 17,000명",
+        )
+    with col_result:
+        try:
+            saved_row = summary[summary["구분"] == "절감효과"]
+            if not saved_row.empty:
+                yearly_cols = [c for c in summary.columns if "연" in c and "절감" in c]
+                if yearly_cols:
+                    yearly_4 = float(str(saved_row[yearly_cols[0]].values[0]).replace(",", ""))
+                    yearly_per = yearly_4 / 4
+                    national_saving = yearly_per * national_workers
+                    st.metric(
+                        label=f"전국 {national_workers:,}명 기준",
+                        value=f"{national_saving/100000000:,.0f}억원/년",
+                        delta=f"1인 평균 {yearly_per/1000:,.0f}천원/년",
+                    )
+        except Exception:
+            st.caption("계산 결과를 표시할 수 없습니다.")
+
+    # ── 캐시 통계 ─────────────────────────────────────────────
+    try:
+        import cache_manager as cm
+        stats = cm.get_stats()
+        if stats["api_calls_made"] + stats["api_calls_saved"] > 0:
+            with st.expander("💾 API 캐시 통계", expanded=False):
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Geocode 캐시", f"{stats['geocode_cache_size']:,}건")
+                c2.metric("도로거리 캐시", f"{stats['road_cache_size']:,}건")
+                c3.metric("API 절약", f"{stats['api_calls_saved']:,}회")
+                c4.metric("캐시 히트율",
+                          f"{max(stats['geocode_hit_rate'], stats['road_hit_rate']):.1f}%")
+    except Exception:
+        pass
+
     # ── 지도 비교 ─────────────────────────────────────────────
     st.markdown("#### 🗺️ 지도 비교")
 
@@ -673,40 +730,49 @@ if st.session_state.get("last_result"):
                 map_tabs = st.tabs(["원본 🔴", "최적화 🔵", "비교"])
 
                 with map_tabs[0]:
-                    with open(result["original_maps"][i], "r", encoding="utf-8") as f:
-                        original_html = f.read()
-                    st.iframe(original_html, height=MAP_HEIGHT)
-                    st.download_button(
-                        label="📥 원본 지도 다운로드",
-                        data=original_html.encode("utf-8"),
-                        file_name=os.path.basename(result["original_maps"][i]),
-                        mime="text/html",
-                        key=f"orig_{i}",
-                    )
+                    try:
+                        with open(result["original_maps"][i], "r", encoding="utf-8") as f:
+                            original_html = f.read()
+                        st.iframe(original_html, height=MAP_HEIGHT)
+                        st.download_button(
+                            label="📥 원본 지도 다운로드",
+                            data=original_html.encode("utf-8"),
+                            file_name=os.path.basename(result["original_maps"][i]),
+                            mime="text/html",
+                            key=f"orig_{i}",
+                        )
+                    except Exception:
+                        st.warning("원본 지도 파일을 불러올 수 없습니다.")
 
                 with map_tabs[1]:
-                    with open(result["optimized_maps"][i], "r", encoding="utf-8") as f:
-                        optimized_html = f.read()
-                    st.iframe(optimized_html, height=MAP_HEIGHT)
-                    st.download_button(
-                        label="📥 최적화 지도 다운로드",
-                        data=optimized_html.encode("utf-8"),
-                        file_name=os.path.basename(result["optimized_maps"][i]),
-                        mime="text/html",
-                        key=f"opt_{i}",
-                    )
+                    try:
+                        with open(result["optimized_maps"][i], "r", encoding="utf-8") as f:
+                            optimized_html = f.read()
+                        st.iframe(optimized_html, height=MAP_HEIGHT)
+                        st.download_button(
+                            label="📥 최적화 지도 다운로드",
+                            data=optimized_html.encode("utf-8"),
+                            file_name=os.path.basename(result["optimized_maps"][i]),
+                            mime="text/html",
+                            key=f"opt_{i}",
+                        )
+                    except Exception:
+                        st.warning("최적화 지도 파일을 불러올 수 없습니다.")
 
                 with map_tabs[2]:
-                    with open(result["compare_maps"][i], "r", encoding="utf-8") as f:
-                        compare_html = f.read()
-                    st.iframe(compare_html, height=MAP_HEIGHT)
-                    st.download_button(
-                        label="📥 비교 지도 다운로드",
-                        data=compare_html.encode("utf-8"),
-                        file_name=os.path.basename(result["compare_maps"][i]),
-                        mime="text/html",
-                        key=f"cmp_{i}",
-                    )
+                    try:
+                        with open(result["compare_maps"][i], "r", encoding="utf-8") as f:
+                            compare_html = f.read()
+                        st.iframe(compare_html, height=MAP_HEIGHT)
+                        st.download_button(
+                            label="📥 비교 지도 다운로드",
+                            data=compare_html.encode("utf-8"),
+                            file_name=os.path.basename(result["compare_maps"][i]),
+                            mime="text/html",
+                            key=f"cmp_{i}",
+                        )
+                    except Exception:
+                        st.warning("비교 지도 파일을 불러올 수 없습니다.")
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -723,3 +789,25 @@ if st.session_state.get("last_result"):
             file_name="최적화_지도.zip",
             mime="application/zip",
         )
+
+    # ── 결과 해석 한계 고지 ───────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        """
+        <div style="
+            background: var(--color-background-secondary, #f8f9fa);
+            border-left: 3px solid #888;
+            border-radius: 0 6px 6px 0;
+            padding: 8px 14px;
+            font-size: 11px;
+            color: #666;
+            margin-top: 8px;
+        ">
+        ⚠️ <b>결과 해석 안내</b> &nbsp;
+        본 최적화 결과는 입력 데이터·주소 정확도·외부 API 응답에 따라 달라질 수 있으며,
+        현장 적용을 위한 <b>의사결정 참고자료</b>로 활용해야 합니다.
+        실제 집배구역 특성·도로 상황·안전 문제·담당자 숙련도 등 현장 여건을 함께 고려하시기 바랍니다.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
