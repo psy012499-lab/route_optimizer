@@ -260,6 +260,27 @@ with col_params:
 
 st.markdown("---")
 
+# ── 개인정보 안내 ──────────────────────────────────────────
+st.markdown(
+    """
+    <div style="
+        background: #f0f7ff;
+        border-left: 3px solid #378ADD;
+        border-radius: 0 6px 6px 0;
+        padding: 8px 14px;
+        font-size: 12px;
+        color: #185FA5;
+        margin-bottom: 12px;
+    ">
+    🔒 <b>개인정보 안내</b> &nbsp;
+    입력된 주소 데이터는 경로 최적화 목적으로만 사용됩니다.
+    도로명 주소는 공개 정보이며 개인 식별 정보를 포함하지 않습니다.
+    주소 좌표 변환 시 네이버 지도 API를 경유하며, 그 외 외부 전송은 없습니다.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # =====================================================
 # 실행 대상 결정
@@ -273,6 +294,40 @@ if use_sample:
 elif uploaded_file is not None:
     target_file = uploaded_file
     st.success("✅ 업로드 완료")
+
+    # ── ⑥ 데이터 미리보기 ─────────────────────────────────────
+    try:
+        uploaded_file.seek(0)
+        df_preview = pd.read_excel(uploaded_file)
+        uploaded_file.seek(0)   # 이후 process_excel이 다시 읽을 수 있도록 되감기
+
+        course_cnt  = df_preview["통상코스"].nunique() if "통상코스" in df_preview.columns else "?"
+        point_cnt   = len(df_preview)
+        worker_list = sorted(df_preview["통상코스"].dropna().unique().tolist()) \
+                      if "통상코스" in df_preview.columns else []
+
+        st.markdown(
+            f"""
+            <div style="
+                background: var(--color-background-secondary);
+                border-radius: 8px;
+                padding: 10px 16px;
+                font-size: 13px;
+                color: var(--color-text-secondary);
+                margin: 6px 0 10px;
+                display: flex;
+                gap: 20px;
+                flex-wrap: wrap;
+            ">
+            <span>📦 <b style="color:var(--color-text-primary)">총 배송지</b> {point_cnt:,}건</span>
+            <span>🗂 <b style="color:var(--color-text-primary)">코스 수</b> {course_cnt}개</span>
+            <span>🔢 <b style="color:var(--color-text-primary)">코스 목록</b> {worker_list}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass   # 미리보기 실패 시 조용히 스킵
 
 
 # =====================================================
@@ -306,24 +361,33 @@ if target_file is not None:
 
         update_progress(0, "")
 
-        with st.spinner("AI 최적화 진행중..."):
-            process_fn = process7 if algo_key == "corse7" else process8
-            result = process_fn(
-                target_file,
-                progress_callback=update_progress,
-                working_days=int(ui_working_days),
-            )
+        # ── ④ 예외처리 ────────────────────────────────────────
+        try:
+            with st.spinner("AI 최적화 진행중..."):
+                process_fn = process7 if algo_key == "corse7" else process8
+                result = process_fn(
+                    target_file,
+                    progress_callback=update_progress,
+                    working_days=int(ui_working_days),
+                )
 
-        moto_bar.markdown("**━━━━━━━━━━━━━━━━━━━🏁** `완료!`")
+            moto_bar.markdown("**━━━━━━━━━━━━━━━━━━━🏁** `완료!`")
 
-        # 결과 session_state 저장
-        st.session_state["last_result"] = result
-        st.session_state["last_final_params"] = {
-            "algorithm":           algo_key,
-            "cost_per_km":         ui_cost_per_km,
-            "labor_cost_per_hour": ui_labor_cost,
-            "working_days":        ui_working_days,
-        }
+            # 결과 session_state 저장
+            st.session_state["last_result"] = result
+            st.session_state["last_final_params"] = {
+                "algorithm":           algo_key,
+                "cost_per_km":         ui_cost_per_km,
+                "labor_cost_per_hour": ui_labor_cost,
+                "working_days":        ui_working_days,
+            }
+
+        except ValueError as e:
+            moto_bar.empty()
+            st.error(f"⚠️ 데이터 오류: {e}\n\n엑셀 파일의 컬럼명(출발지·도착지·통상코스·통상순로)을 확인해주세요.")
+        except Exception as e:
+            moto_bar.empty()
+            st.error(f"⚠️ 최적화 중 오류가 발생했습니다: {e}")
 
 
 # =====================================================
