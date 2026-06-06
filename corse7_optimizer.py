@@ -1006,7 +1006,7 @@ def save_compare_map(
 # 메인
 # =========================================================
 
-def process_excel(uploaded_file, progress_callback=None):
+def process_excel(uploaded_file, progress_callback=None, target_courses=None, working_days=21):
 
     def report(pct, msg):
         print(f"[{pct}%] {msg}")
@@ -1108,6 +1108,10 @@ def process_excel(uploaded_file, progress_callback=None):
     optimized_rows_all = []
 
     course_list = sorted(df[COURSE_COL].unique())
+    if target_courses:
+        course_list = [c for c in course_list if c in target_courses]
+        if not course_list:
+            raise ValueError(f"지정한 코스 {target_courses}가 데이터에 없습니다.")
     total_courses = len(course_list)
 
     for ci, course_no in enumerate(course_list):
@@ -1279,7 +1283,7 @@ def process_excel(uploaded_file, progress_callback=None):
     )
 
     monthly_total_saving = (
-        daily_total_saving * 21
+        daily_total_saving * working_days
     )
 
     yearly_total_saving = (
@@ -1328,7 +1332,7 @@ def process_excel(uploaded_file, progress_callback=None):
             round(daily_total_saving)
         ],
 
-        "월 절감액(21일 기준)": [
+        f"월 절감액({working_days}일 기준)": [
             None,
             None,
             round(monthly_total_saving)
