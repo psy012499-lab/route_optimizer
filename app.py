@@ -214,7 +214,7 @@ h3 { font-size: 1.05rem !important; }
 
 @st.cache_data(show_spinner=False)
 def make_sample_excel() -> io.BytesIO:
-    # 부산 동래구 실측 집배 데이터 — 5건 이상 코스 · 코스당 최대 15건 (약 200건)
+    # 부산 동래구 실측 집배 데이터 — 10코스·143건
     import os
 
     def is_bad(addr):
@@ -230,16 +230,7 @@ def make_sample_excel() -> io.BytesIO:
         df["출발지"] = df["출발지"].ffill()
         df = df[~df["도착지"].apply(is_bad)].copy()
         df["도착지"] = df["도착지"].str.strip()
-        df = df[["출발지", "도착지", "통상코스", "통상순로"]]
-
-        # 5건 이상 코스만, 코스당 최대 15건으로 제한 → 약 200건
-        parts = []
-        for _, grp in df.groupby("통상코스"):
-            if len(grp) < 5:
-                continue
-            parts.append(grp.head(15))
-        df = pd.concat(parts).reset_index(drop=True)
-
+        df = df[["출발지", "도착지", "통상코스", "통상순로"]].reset_index(drop=True)
     except Exception:
         # 파일 없을 경우 최소 백업 데이터
         DEPART = "부산광역시 동래구 명륜로 169"
