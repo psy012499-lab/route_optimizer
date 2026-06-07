@@ -224,7 +224,7 @@ def make_sample_excel() -> io.BytesIO:
         return False
 
     try:
-        sample_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input_시내통상구_.xlsx")
+        sample_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input(시내통상구).xlsx")
         df = pd.read_excel(sample_path)
         df["출발지"] = df["출발지"].ffill()
         df = df[~df["도착지"].apply(is_bad)].copy()
