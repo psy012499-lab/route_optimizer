@@ -17,6 +17,7 @@ import time
 import pickle
 import logging
 import re
+import threading
 import pandas as pd
 import requests
 import folium
@@ -79,17 +80,21 @@ ORDER_COL = "통상순로"
 # 출력 파일
 # =========================================================
 
-OUTPUT_EXCEL = "output_result.xlsx"
+import tempfile as _tempfile
+import uuid as _uuid
+
+_run_id      = _uuid.uuid4().hex[:8]
+OUTPUT_EXCEL = f"output_result_c8_{_run_id}.xlsx"
 
 GEOCODE_CACHE_FILE = "geocode_cache.pkl"
-ROAD_CACHE_FILE = "road_cache.pkl"
+ROAD_CACHE_FILE    = "road_cache.pkl"
 
 # =========================================================
 # 지도 설정
 # =========================================================
 
 CREATE_MAP = True
-MAP_FOLDER = "maps"
+MAP_FOLDER = f"maps_c8_{_run_id}"
 
 # =========================================================
 # 시스템 정보
@@ -155,6 +160,9 @@ def _load_cache(path: str) -> dict:
 
 geocode_cache = _load_cache(GEOCODE_CACHE_FILE) if USE_CACHE else {}
 road_cache    = _load_cache(ROAD_CACHE_FILE)    if USE_CACHE else {}
+
+# thread-safe 캐시 저장용 Lock
+_cache_lock = threading.Lock()
 
 # =========================================================
 # Session 생성
@@ -1137,6 +1145,10 @@ def process_excel(uploaded_file, progress_callback=None, target_courses=None, wo
         os.makedirs(MAP_FOLDER, exist_ok=True)
 
     report(5, "엑셀 파일 읽는 중...")
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
     df = pd.read_excel(uploaded_file)
 
     required_cols = [
@@ -1379,8 +1391,9 @@ def process_excel(uploaded_file, progress_callback=None, target_courses=None, wo
     # 절감효과 계산
     # =====================================================
 
-    saved_distance_m = d1 - d2
-    saved_time_ms = t1 - t2
+    # max(0, ...) 으로 음수 절감 방지 — 최적화 결과가 원본보다 나쁠 경우 0으로 처리
+    saved_distance_m = max(0, d1 - d2)
+    saved_time_ms    = max(0, t1 - t2)
 
     saved_km = meter_to_km(
         saved_distance_m
@@ -1494,30 +1507,21 @@ def process_excel(uploaded_file, progress_callback=None, target_courses=None, wo
         )
 
     # =====================================================
-    # 캐시 저장
+    # 캐시 저장 (thread-safe)
     # =====================================================
 
     if USE_CACHE:
-
-        with open(
-            GEOCODE_CACHE_FILE,
-            "wb"
-        ) as f:
-
-            pickle.dump(
-                geocode_cache,
-                f
-            )
-
-        with open(
-            ROAD_CACHE_FILE,
-            "wb"
-        ) as f:
-
-            pickle.dump(
-                road_cache,
-                f
-            )
+        with _cache_lock:
+            try:
+                with open(GEOCODE_CACHE_FILE, "wb") as f:
+                    pickle.dump(geocode_cache, f)
+            except Exception as e:
+                print(f"[캐시] geocode 저장 실패: {e}")
+            try:
+                with open(ROAD_CACHE_FILE, "wb") as f:
+                    pickle.dump(road_cache, f)
+            except Exception as e:
+                print(f"[캐시] road 저장 실패: {e}")
 
     elapsed = time.time() - start_time
 

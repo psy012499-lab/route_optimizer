@@ -212,6 +212,7 @@ h3 { font-size: 1.05rem !important; }
 # 샘플 데이터 생성
 # =====================================================
 
+@st.cache_data(show_spinner=False)
 def make_sample_excel() -> io.BytesIO:
     # 부산 동래구 실측 집배 데이터 전체 사용 (지번주소 제외)
     import os
@@ -257,7 +258,7 @@ def make_sample_excel() -> io.BytesIO:
 # 요약 카드 렌더링
 # =====================================================
 
-def render_summary_cards(summary_df: pd.DataFrame):
+def render_summary_cards(summary_df: pd.DataFrame, working_days: int = 21):
     try:
         orig_row = summary_df[summary_df["구분"] == "원본"]
         opt_row  = summary_df[summary_df["구분"] == "최적화"]
@@ -303,16 +304,21 @@ def render_summary_cards(summary_df: pd.DataFrame):
         save_d = (orig_d - opt_d) if (orig_d and opt_d) else None
         rate   = round(save_d / orig_d * 100, 1) if (save_d and orig_d) else None
 
-        # ── 이동시간 단축 (H:MM 문자열 파싱) ──────────────
+        # ── 이동시간 단축 — 절감효과 행에서 직접 읽기 ──────────
         time_col = "총 이동시간"
         save_t = None
         if time_col in summary_df.columns:
-            orig_t_raw = orig_row[time_col].values[0] if not orig_row.empty else None
-            opt_t_raw  = opt_row[time_col].values[0]  if not opt_row.empty else None
-            orig_t = hhmm_to_min(orig_t_raw)
-            opt_t  = hhmm_to_min(opt_t_raw)
-            if orig_t and opt_t:
-                save_t = orig_t - opt_t
+            # 절감효과 행의 이동시간 직접 사용
+            sav_t_raw = sav_row[time_col].values[0] if not sav_row.empty else None
+            save_t = hhmm_to_min(sav_t_raw)
+            # 절감효과 행이 0분이면 원본-최적화 차이로 계산
+            if save_t is None or save_t == 0:
+                orig_t_raw = orig_row[time_col].values[0] if not orig_row.empty else None
+                opt_t_raw  = opt_row[time_col].values[0]  if not opt_row.empty else None
+                orig_t = hhmm_to_min(orig_t_raw)
+                opt_t  = hhmm_to_min(opt_t_raw)
+                if orig_t and opt_t and orig_t > opt_t:
+                    save_t = orig_t - opt_t
 
         # ── 절감액 컬럼 (동적 컬럼명 대응) ───────────────
         day_col = find_col(summary_df, "일 총 절감액")
@@ -337,7 +343,7 @@ def render_summary_cards(summary_df: pd.DataFrame):
         if day_save is not None:
             cards.append(("일 총 절감액",     fmt_money(day_save),    "green"))
         if mon_save is not None:
-            cards.append(("월 절감액(21일)",  fmt_money(mon_save),    "green"))
+            cards.append((f"월 절감액({working_days}일)", fmt_money(mon_save), "green"))
         if ann_save is not None:
             cards.append(("연 절감액",        fmt_money(ann_save),    "green"))
 
@@ -417,11 +423,19 @@ with col_upload:
     st.caption("출발지 · 도착지 · 통상코스 · 통상순로 컬럼 포함")
 
     st.markdown("##### 📱 샘플 데이터 체험")
+
+    # 툴팁용 샘플 정보 미리 파악
+    try:
+        _s = make_sample_excel()
+        _tooltip = f"부산 동래구 {_s.n_courses}코스·{_s.n_rows}건으로 즉시 체험"
+    except Exception:
+        _tooltip = "샘플 데이터로 즉시 체험"
+
     use_sample = st.button(
         "🚀 샘플 데이터로 바로 실행",
         type="primary",
         use_container_width=True,
-        help="부산 동래구 4코스·30건으로 즉시 체험",
+        help=_tooltip,
     )
     st.caption("파일 없이도 바로 체험 가능")
 
@@ -628,7 +642,7 @@ if st.session_state.get("last_result"):
     # ── 요약 결과 ─────────────────────────────────────────────
     st.markdown("#### 📊 요약 결과")
     summary = result["summary"]
-    card_ok = render_summary_cards(summary)
+    card_ok = render_summary_cards(summary, working_days=final_params.get("working_days", 21))
 
     with st.expander("📋 상세 요약 테이블 보기", expanded=not card_ok):
         st.dataframe(summary, width='stretch')
@@ -716,8 +730,8 @@ if st.session_state.get("last_result"):
             if not saved_row.empty:
                 yearly_cols = [c for c in summary.columns if "연" in c and "절감" in c]
                 if yearly_cols:
-                    yearly_4 = float(str(saved_row[yearly_cols[0]].values[0]).replace(",", ""))
-                    yearly_per = yearly_4 / 4
+                    # 파일 1개 = 집배원 1명 기준 → 그대로 1인 절감액
+                    yearly_per      = float(str(saved_row[yearly_cols[0]].values[0]).replace(",", ""))
                     national_saving = yearly_per * national_workers
                     st.metric(
                         label=f"집배원 {national_workers:,}명 기준",
@@ -750,8 +764,13 @@ if st.session_state.get("last_result"):
     if course_count == 0:
         st.warning("생성된 지도가 없습니다.")
     else:
-        MAP_HEIGHT  = 450
-        course_tabs = st.tabs([f"코스 {i+1}" for i in range(course_count)])
+        MAP_HEIGHT = 450
+        # 실제 코스 번호 추출
+        try:
+            course_nums = sorted(result["df_optimized"]["통상코스"].dropna().unique().astype(int).tolist())
+        except Exception:
+            course_nums = list(range(1, course_count + 1))
+        course_tabs = st.tabs([f"코스 {c}" for c in course_nums])
 
         for i, tab in enumerate(course_tabs):
             with tab:
@@ -804,12 +823,12 @@ if st.session_state.get("last_result"):
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path in result["original_maps"]:
-                zf.write(path, os.path.basename(path))
-            for path in result["optimized_maps"]:
-                zf.write(path, os.path.basename(path))
-            for path in result["compare_maps"]:
-                zf.write(path, os.path.basename(path))
+            for path in result["original_maps"] + result["optimized_maps"] + result["compare_maps"]:
+                try:
+                    if os.path.exists(path):
+                        zf.write(path, os.path.basename(path))
+                except Exception:
+                    pass
 
         st.download_button(
             label="🗺️ 지도 전체 ZIP 다운로드",
