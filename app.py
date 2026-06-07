@@ -270,69 +270,91 @@ def make_sample_excel() -> io.BytesIO:
 
 def render_summary_cards(summary_df: pd.DataFrame):
     try:
-        # 절감효과 행 우선, 없으면 마지막 행
-        mask = summary_df.astype(str).apply(
-            lambda col: col.str.contains("합계|전체|합 계|total|절감효과", case=False, na=False)
-        ).any(axis=1)
-        row = summary_df[mask].iloc[0] if mask.any() else summary_df.iloc[-1]
+        orig_row = summary_df[summary_df["구분"] == "원본"]
+        opt_row  = summary_df[summary_df["구분"] == "최적화"]
+        sav_row  = summary_df[summary_df["구분"].astype(str).str.contains("절감|합계|효과", na=False)]
 
-        # ── 절감률(%) 직접 계산해서 맨 앞 카드로 추가 ──────────
-        extra_cards = []
-        try:
-            orig_row = summary_df[summary_df["구분"] == "원본"]
-            opt_row  = summary_df[summary_df["구분"] == "최적화"]
-            dist_col = "총 이동거리(km)"
-            if dist_col in summary_df.columns and not orig_row.empty and not opt_row.empty:
-                orig_d = float(str(orig_row[dist_col].values[0]).replace(",", ""))
-                opt_d  = float(str(opt_row[dist_col].values[0]).replace(",", ""))
-                if orig_d > 0:
-                    rate = round((orig_d - opt_d) / orig_d * 100, 1)
-                    extra_cards.append(("이동거리 절감률", rate, f"▼{rate}%"))
-        except Exception:
-            pass
-
-        num_cols = []
-        for col in summary_df.columns:
-            if col == "구분":
-                continue
-            val = row[col]
-            try:
-                fval = float(str(val).replace(",", "").replace("%", ""))
-                num_cols.append((str(col), fval, str(val)))
-            except (ValueError, TypeError):
-                pass
-
-        if not num_cols and not extra_cards:
+        if orig_row.empty or opt_row.empty:
             return False
 
-        def card_class(col_name):
-            c = col_name.lower()
-            if any(k in c for k in ["절감률", "절감율", "단축률", "%", "율"]):
-                return "highlight"
-            if any(k in c for k in ["절감", "단축", "최적"]):
-                return "green"
-            return ""
+        def fv(row, col):
+            """컬럼 값을 float으로 안전하게 변환"""
+            if col not in row.columns: return None
+            try: return float(str(row[col].values[0]).replace(",", "").replace("%",""))
+            except: return None
 
-        def fmt_val(col_name, raw_str, fval):
-            c = col_name.lower()
-            if any(k in c for k in ["절감액", "비용", "원"]):
-                if fval >= 1_000_000:
-                    return f"{fval/1000:,.0f}천원"
-                elif fval >= 1_000:
-                    return f"{fval/1000:.1f}천원"
-                else:
-                    return f"{fval:,.0f}원"
-            return raw_str
+        def fmt_km(v):
+            if v is None: return "-"
+            return f"▼{v:.2f}km"
 
-        # extra_cards 먼저, 나머지 최대 5개
-        all_cards = extra_cards + num_cols
+        def fmt_time(v):
+            """분 단위 → h:mm 또는 분 표시"""
+            if v is None: return "-"
+            h = int(v // 60); m = int(v % 60)
+            return f"▼{h}시간 {m}분" if h > 0 else f"▼{m}분"
+
+        def fmt_money(v, suffix=""):
+            if v is None: return "-"
+            if v >= 1_000_000: return f"{v/1_000_000:.1f}백만원{suffix}"
+            if v >= 1_000:     return f"{v/1000:.1f}천원{suffix}"
+            return f"{v:,.0f}원{suffix}"
+
+        # ── 수치 계산 ──────────────────────────────────────
+        # 절감거리
+        dist_col = "총 이동거리(km)"
+        orig_d = fv(orig_row, dist_col)
+        opt_d  = fv(opt_row,  dist_col)
+        save_d = (orig_d - opt_d) if (orig_d and opt_d) else None
+        rate   = round(save_d / orig_d * 100, 1) if (save_d and orig_d) else None
+
+        # 절감시간(분)
+        time_col = "총 이동시간(분)"
+        orig_t = fv(orig_row, time_col)
+        opt_t  = fv(opt_row,  time_col)
+        save_t = (orig_t - opt_t) if (orig_t and opt_t) else None
+
+        # 절감액 — 절감효과 행 우선, 없으면 직접 계산
+        day_col = "일 총 절감액(원)"
+        mon_col = "월 절감액(21일 기준)"
+        day_save = fv(sav_row, day_col) if not sav_row.empty else None
+        mon_save = fv(sav_row, mon_col) if not sav_row.empty else None
+        ann_save = mon_save * 12 if mon_save else (day_save * 21 * 12 if day_save else None)
+
+        # ── 카드 구성 ──────────────────────────────────────
+        cards = []
+
+        # 1. 이동거리 절감률
+        if rate is not None:
+            cards.append(("이동거리 절감률", f"▼{rate}%", "highlight"))
+
+        # 2. 이동거리 절감량 (총이동거리 → 절감거리로 표현 변경)
+        if save_d is not None:
+            cards.append(("이동거리 절감량", fmt_km(save_d), "green"))
+
+        # 3. 이동시간 단축
+        if save_t is not None:
+            cards.append(("이동시간 단축", fmt_time(save_t), "green"))
+
+        # 4. 일 총 절감액
+        if day_save is not None:
+            cards.append(("일 총 절감액", fmt_money(day_save), "green"))
+
+        # 5. 월 절감액
+        if mon_save is not None:
+            cards.append(("월 절감액(21일)", fmt_money(mon_save), "green"))
+
+        # 6. 연 절감액
+        if ann_save is not None:
+            cards.append(("연 절감액", fmt_money(ann_save), "green"))
+
+        if not cards:
+            return False
+
         html = '<div class="metric-grid">'
-        for col, fval, raw in all_cards[:6]:
-            cls   = card_class(col)
-            value = fmt_val(col, raw, fval)
+        for label, value, cls in cards[:6]:
             html += f"""
             <div class="metric-card">
-                <div class="metric-label">{col}</div>
+                <div class="metric-label">{label}</div>
                 <div class="metric-value {cls}">{value}</div>
             </div>"""
         html += '</div>'
@@ -563,14 +585,6 @@ if target_file is not None:
                 "working_days":        ui_working_days,
             }
             st.session_state["ai_interpretation"] = None
-
-            # 실패 주소 알림
-            failed = result.get("failed_addresses", [])
-            if failed:
-                st.warning(
-                    f"⚠️ 좌표 변환 실패 주소 {len(failed)}건 — 해당 주소는 최적화에서 제외됩니다.\n\n"
-                    + "\n".join(f"  • {a}" for a in failed)
-                )
 
         except ValueError as e:
             moto_bar.empty()
