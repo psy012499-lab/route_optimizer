@@ -4,7 +4,7 @@
 #
 # ▶ 시스템 개요
 #   집배원의 통상코스·통상순로 데이터를 입력받아
-#   네이버 Geocode·Direction API + Haversine 기반 하이브리드 최적화 알고리즘
+#   네이버 Maps AI API + Haversine 하이브리드 알고리즘으로
 #   실도로 기반 최적 순로를 자동 산출하는 웹 기반 업무개선 시스템
 #
 # ▶ 주요 구성
@@ -103,6 +103,7 @@ def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
         "간결하고 명확한 한국어로 해석해 주세요. "
         "전문 용어는 풀어서 설명하고, 수치는 구체적으로 언급하며, "
         "현업 적용 시 기대되는 효과를 강조해 주세요.\n\n"
+        "주의사항: '집중국' 표현은 사용하지 말고 반드시 '우체국'으로 표현하세요.\n\n"
         "응답은 반드시 아래 형식을 따르세요:\n\n"
         "**[최적화 결과 요약]**\n(2~3문장으로 핵심 수치 요약)\n\n"
         "**[절감 효과 분석]**\n(비용·시간 절감 의미를 현업 관점에서 설명)\n\n"
@@ -111,7 +112,8 @@ def call_claude_interpretation(summary_text: str, algorithm_name: str) -> str:
     user = (
         f"다음은 AI 집배순로 최적화 시스템({algorithm_name})의 실행 결과입니다.\n\n"
         f"{summary_text}\n\n"
-        "이 결과를 분석하여 우편집중국 담당자가 이해하기 쉽게 해석해 주세요."
+        "이 결과를 분석하여 우체국 담당자가 이해하기 쉽게 해석해 주세요. "
+        "'집중국'이라는 표현은 절대 사용하지 말고 '우체국'으로만 표현하세요."
     )
     headers = {
         "Content-Type": "application/json",
