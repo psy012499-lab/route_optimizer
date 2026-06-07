@@ -213,46 +213,35 @@ h3 { font-size: 1.05rem !important; }
 # =====================================================
 
 def make_sample_excel() -> io.BytesIO:
-    # 부산 동래구 실측 데이터 — 4개 코스(충렬대로·동래로·동래로116·충렬대로237) 30건
-    DEPART = "부산광역시 동래구 명륜로 169"
-    sample_rows = [
-        # 코스 1 — 충렬대로·동래로·명륜로 (하단부)
-        (DEPART, "부산광역시 동래구 충렬대로181번길 109", 1,  1),
-        (DEPART, "부산광역시 동래구 동래로 109",          1,  2),
-        (DEPART, "부산광역시 동래구 동래로 103",          1,  3),
-        (DEPART, "부산광역시 동래구 동래로 91",           1,  4),
-        (DEPART, "부산광역시 동래구 동래로 84",           1,  5),
-        (DEPART, "부산광역시 동래구 명륜로 155",          1,  6),
-        (DEPART, "부산광역시 동래구 명륜로 151",          1,  7),
-        (DEPART, "부산광역시 동래구 명륜로 147",          1,  8),
-        # 코스 3 — 동래로79번길·명륜로 (중단부)
-        (DEPART, "부산광역시 동래구 동래로79번길 15",     3,  1),
-        (DEPART, "부산광역시 동래구 동래로79번길 17",     3,  2),
-        (DEPART, "부산광역시 동래구 동래로79번길 19",     3,  3),
-        (DEPART, "부산광역시 동래구 명륜로 171-6",        3,  4),
-        (DEPART, "부산광역시 동래구 명륜로 171-4",        3,  5),
-        (DEPART, "부산광역시 동래구 명륜로 173",          3,  7),
-        (DEPART, "부산광역시 동래구 명륜로 175",          3,  8),
-        # 코스 18 — 동래로116번길·동래로 (상단부)
-        (DEPART, "부산광역시 동래구 동래로116번길 4",     18,  2),
-        (DEPART, "부산광역시 동래구 동래로 114-1",        18,  3),
-        (DEPART, "부산광역시 동래구 동래로 112",          18,  5),
-        (DEPART, "부산광역시 동래구 동래로116번길 8-12",  18,  6),
-        (DEPART, "부산광역시 동래구 동래로 108",          18,  7),
-        (DEPART, "부산광역시 동래구 동래로 106",          18,  8),
-        (DEPART, "부산광역시 동래구 동래로 108-7",        18,  9),
-        (DEPART, "부산광역시 동래구 동래로 108-5",        18, 10),
-        # 코스 22 — 충렬대로237번길 (별도 구역)
-        (DEPART, "부산광역시 동래구 충렬대로237번길 106",    22,  1),
-        (DEPART, "부산광역시 동래구 충렬대로237번길 108-6",  22,  2),
-        (DEPART, "부산광역시 동래구 충렬대로237번길 108-7",  22,  3),
-        (DEPART, "부산광역시 동래구 충렬대로237번길 108-8",  22,  4),
-        (DEPART, "부산광역시 동래구 충렬대로237번길 108-9",  22,  5),
-        (DEPART, "부산광역시 동래구 충렬대로237번길 108-11", 22,  6),
-        (DEPART, "부산광역시 동래구 충렬대로237번길 110",    22,  7),
-    ]
-    df = pd.DataFrame(sample_rows, columns=["출발지", "도착지", "통상코스", "통상순로"])
-    n_courses = df["통상코스"].nunique()
+    # 부산 동래구 실측 집배 데이터 전체 사용 (지번주소 제외)
+    import os
+
+    def is_bad(addr):
+        if not isinstance(addr, str): return True
+        addr = addr.strip()
+        if addr in ["-", "", "nan"]: return True
+        if "  " in addr: return True
+        return False
+
+    try:
+        sample_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input_시내통상구_.xlsx")
+        df = pd.read_excel(sample_path)
+        df["출발지"] = df["출발지"].ffill()
+        df = df[~df["도착지"].apply(is_bad)].copy()
+        df["도착지"] = df["도착지"].str.strip()
+        df = df[["출발지", "도착지", "통상코스", "통상순로"]].reset_index(drop=True)
+    except Exception:
+        # 파일 없을 경우 최소 백업 데이터
+        DEPART = "부산광역시 동래구 명륜로 169"
+        rows = [
+            (DEPART, "부산광역시 동래구 충렬대로181번길 109", 1, 1),
+            (DEPART, "부산광역시 동래구 동래로 109",          1, 2),
+            (DEPART, "부산광역시 동래구 명륜로 165",          5, 1),
+            (DEPART, "부산광역시 동래구 명륜로 163",          5, 2),
+        ]
+        df = pd.DataFrame(rows, columns=["출발지", "도착지", "통상코스", "통상순로"])
+
+    n_courses = int(df["통상코스"].nunique())
     n_rows    = len(df)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -272,80 +261,85 @@ def render_summary_cards(summary_df: pd.DataFrame):
     try:
         orig_row = summary_df[summary_df["구분"] == "원본"]
         opt_row  = summary_df[summary_df["구분"] == "최적화"]
-        sav_row  = summary_df[summary_df["구분"].astype(str).str.contains("절감|합계|효과", na=False)]
+        sav_row  = summary_df[summary_df["구분"] == "절감효과"]
 
-        if orig_row.empty or opt_row.empty:
+        if orig_row.empty or opt_row.empty or sav_row.empty:
             return False
 
         def fv(row, col):
-            """컬럼 값을 float으로 안전하게 변환"""
             if col not in row.columns: return None
-            try: return float(str(row[col].values[0]).replace(",", "").replace("%",""))
+            try: return float(str(row[col].values[0]).replace(",", ""))
             except: return None
 
-        def fmt_km(v):
-            if v is None: return "-"
-            return f"▼{v:.2f}km"
+        def find_col(df, keyword):
+            """컬럼명에 키워드가 포함된 첫 번째 컬럼 반환"""
+            cols = [c for c in df.columns if keyword in c]
+            return cols[0] if cols else None
 
-        def fmt_time(v):
-            """분 단위 → h:mm 또는 분 표시"""
+        def fmt_money(v):
             if v is None: return "-"
-            h = int(v // 60); m = int(v % 60)
-            return f"▼{h}시간 {m}분" if h > 0 else f"▼{m}분"
+            if v >= 100_000_000: return f"{v/100_000_000:.1f}억원"
+            if v >= 1_000_000:   return f"{v/1_000_000:.1f}백만원"
+            if v >= 1_000:       return f"{v/1000:.1f}천원"
+            return f"{v:,.0f}원"
 
-        def fmt_money(v, suffix=""):
-            if v is None: return "-"
-            if v >= 1_000_000: return f"{v/1_000_000:.1f}백만원{suffix}"
-            if v >= 1_000:     return f"{v/1000:.1f}천원{suffix}"
-            return f"{v:,.0f}원{suffix}"
+        def hhmm_to_min(val):
+            """'3시간 7분' 또는 '45분' 형태 문자열 → 분(int)"""
+            try:
+                val = str(val).strip()
+                import re
+                h = re.search(r"(\d+)시간", val)
+                m = re.search(r"(\d+)분",  val)
+                total = 0
+                if h: total += int(h.group(1)) * 60
+                if m: total += int(m.group(1))
+                return total if total > 0 else None
+            except: return None
 
-        # ── 수치 계산 ──────────────────────────────────────
-        # 절감거리
+        # ── 이동거리 절감률 & 절감량 ──────────────────────
         dist_col = "총 이동거리(km)"
         orig_d = fv(orig_row, dist_col)
         opt_d  = fv(opt_row,  dist_col)
         save_d = (orig_d - opt_d) if (orig_d and opt_d) else None
         rate   = round(save_d / orig_d * 100, 1) if (save_d and orig_d) else None
 
-        # 절감시간(분)
-        time_col = "총 이동시간(분)"
-        orig_t = fv(orig_row, time_col)
-        opt_t  = fv(opt_row,  time_col)
-        save_t = (orig_t - opt_t) if (orig_t and opt_t) else None
+        # ── 이동시간 단축 (H:MM 문자열 파싱) ──────────────
+        time_col = "총 이동시간"
+        save_t = None
+        if time_col in summary_df.columns:
+            orig_t_raw = orig_row[time_col].values[0] if not orig_row.empty else None
+            opt_t_raw  = opt_row[time_col].values[0]  if not opt_row.empty else None
+            orig_t = hhmm_to_min(orig_t_raw)
+            opt_t  = hhmm_to_min(opt_t_raw)
+            if orig_t and opt_t:
+                save_t = orig_t - opt_t
 
-        # 절감액 — 절감효과 행 우선, 없으면 직접 계산
-        day_col = "일 총 절감액(원)"
-        mon_col = "월 절감액(21일 기준)"
-        day_save = fv(sav_row, day_col) if not sav_row.empty else None
-        mon_save = fv(sav_row, mon_col) if not sav_row.empty else None
-        ann_save = mon_save * 12 if mon_save else (day_save * 21 * 12 if day_save else None)
+        # ── 절감액 컬럼 (동적 컬럼명 대응) ───────────────
+        day_col = find_col(summary_df, "일 총 절감액")
+        mon_col = find_col(summary_df, "월 절감액")
+        ann_col = find_col(summary_df, "연 절감액")
 
-        # ── 카드 구성 ──────────────────────────────────────
+        day_save = fv(sav_row, day_col) if day_col else None
+        mon_save = fv(sav_row, mon_col) if mon_col else None
+        ann_save = fv(sav_row, ann_col) if ann_col else (mon_save * 12 if mon_save else None)
+
+        # ── 카드 렌더링 ────────────────────────────────────
         cards = []
 
-        # 1. 이동거리 절감률
         if rate is not None:
-            cards.append(("이동거리 절감률", f"▼{rate}%", "highlight"))
-
-        # 2. 이동거리 절감량 (총이동거리 → 절감거리로 표현 변경)
+            cards.append(("이동거리 절감률",  f"▼{rate}%",           "highlight"))
         if save_d is not None:
-            cards.append(("이동거리 절감량", fmt_km(save_d), "green"))
-
-        # 3. 이동시간 단축
+            cards.append(("이동거리 절감량",  f"▼{save_d:.2f}km",    "green"))
         if save_t is not None:
-            cards.append(("이동시간 단축", fmt_time(save_t), "green"))
-
-        # 4. 일 총 절감액
+            h, m = divmod(int(save_t), 60)
+            t_str = f"▼{h}시간 {m}분" if h > 0 else f"▼{m}분"
+            cards.append(("이동시간 단축",    t_str,                  "green"))
         if day_save is not None:
-            cards.append(("일 총 절감액", fmt_money(day_save), "green"))
-
-        # 5. 월 절감액
+            cards.append(("일 총 절감액",     fmt_money(day_save),    "green"))
         if mon_save is not None:
-            cards.append(("월 절감액(21일)", fmt_money(mon_save), "green"))
-
-        # 6. 연 절감액
+            cards.append(("월 절감액(21일)",  fmt_money(mon_save),    "green"))
         if ann_save is not None:
-            cards.append(("연 절감액", fmt_money(ann_save), "green"))
+            cards.append(("연 절감액",        fmt_money(ann_save),    "green"))
 
         if not cards:
             return False
