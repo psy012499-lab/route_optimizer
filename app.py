@@ -744,15 +744,21 @@ if st.session_state.get("last_result"):
     # ── 캐시 통계 ─────────────────────────────────────────────
     try:
         import cache_manager as cm
+        import corse7_optimizer as c7
+        import corse8_optimizer as c8
         stats = cm.get_stats()
-        if stats["api_calls_made"] + stats["api_calls_saved"] > 0:
-            with st.expander("💾 API 캐시 통계", expanded=False):
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Geocode 캐시", f"{stats['geocode_cache_size']:,}건")
-                c2.metric("도로거리 캐시", f"{stats['road_cache_size']:,}건")
-                c3.metric("API 절약", f"{stats['api_calls_saved']:,}회")
-                c4.metric("캐시 히트율",
-                          f"{max(stats['geocode_hit_rate'], stats['road_hit_rate']):.1f}%")
+
+        # optimizer 자체 캐시 딕셔너리에서 실제 크기 읽기
+        geo_size  = len(c7.geocode_cache) or len(c8.geocode_cache)
+        road_size = len(c7.road_cache)    or len(c8.road_cache)
+
+        with st.expander("💾 API 캐시 통계", expanded=False):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Geocode 캐시",  f"{geo_size:,}건")
+            c2.metric("도로거리 캐시", f"{road_size:,}건")
+            c3.metric("API 절약",      f"{stats['api_calls_saved']:,}회")
+            c4.metric("캐시 히트율",
+                      f"{max(stats['geocode_hit_rate'], stats['road_hit_rate']):.1f}%")
     except Exception:
         pass
 
